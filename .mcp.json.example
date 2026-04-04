@@ -4,11 +4,11 @@
       "command": "bun",
       "args": ["./server.ts"],
       "env": {
-        "ECLAW_API_KEY": "eck_f0ff48e0dc62d74ebe858c7fd76d31d69a7ef7b13df0b9d85ca4291f9afe77ac",
+        "ECLAW_API_KEY": "eck_your_api_key_here",
         "ECLAW_API_BASE": "https://eclawbot.com",
         "ECLAW_WEBHOOK_PORT": "18800",
-        "ECLAW_WEBHOOK_URL": "https://a.eclawbot.com",
-        "ECLAW_BOT_NAME": "Mac_A"
+        "ECLAW_WEBHOOK_URL": "https://your-public-url.example.com",
+        "ECLAW_BOT_NAME": "My_Bot"
       }
     }
   }

@@ -1,57 +1,57 @@
 # EClaw Channel Bridge for Claude Code
 
-透過 Claude Code Channel 接收 [EClaw](https://eclawbot.com) 平台的訊息，讓 Claude 直接在終端機回覆使用者。
+透過 Claude Code 的 Channel 機制接收 [EClaw](https://eclawbot.com) 平台的即時訊息，讓 Claude 直接在終端機中自動回覆使用者。
 
-## 架構
+本專案包含兩種架構模式：
+- **bridge 模式**（`bridge.ts`）：透過 fakechat plugin 的 WebSocket 橋接
+- **server 模式**（`server.ts`）：原生 MCP Channel plugin，直接與 Claude Code 整合
+
+## 架構流程
 
 ```
 使用者 (EClaw App)
-    ↓ 發送訊息
+    │ 發送訊息
+    ▼
 EClaw 平台 (eclawbot.com)
-    ↓ Webhook Push
-Bridge (bridge.ts, port 18800)
-    ↓ WebSocket
-Fakechat Plugin (Claude Code built-in, port 8787)
-    ↓ MCP Notification
-Claude Code (terminal, --channels)
-    ↓ fakechat reply tool
-Bridge (intercept WebSocket reply)
-    ↓ EClaw API
+    │ Webhook POST
+    ▼
+bridge.ts (port 18800)          ← 接收 EClaw 推送
+    │ WebSocket
+    ▼
+fakechat plugin (port 8787)     ← Claude Code 內建 plugin
+    │ MCP Notification
+    ▼
+Claude Code (terminal)          ← 在 tmux session 中運行
+    │ fakechat reply tool
+    ▼
+bridge.ts                       ← 攔截 WebSocket 回覆
+    │ EClaw API POST
+    ▼
 使用者收到回覆
+```
+
+**server 模式（替代方案）：**
+
+```
+EClaw 平台 → Webhook → server.ts (MCP Server + HTTP)
+    → MCP notification → Claude Code
+    → eclaw_reply tool → server.ts → EClaw API → 使用者
 ```
 
 ## 前置需求
 
-- **Claude Code** v2.1.80+（`npm install -g @anthropic-ai/claude-code`）
-- **Bun** runtime（`curl -fsSL https://bun.sh/install | bash`）
-- **claude.ai 帳號**（需登入，不支援 API key 認證）
-- **tmux**（`brew install tmux`）
-- **Fakechat plugin**（Claude Code 內建，需安裝）
-- **EClaw Channel API Key**（從 EClaw Portal 取得）
-- **公開 URL**（用於接收 webhook，例如 Cloudflare Tunnel / ngrok）
+- **Bun** runtime — `curl -fsSL https://bun.sh/install | bash`
+- **Claude Code** v2.1.80+（含 fakechat plugin 支援）— `npm install -g @anthropic-ai/claude-code`
+- **claude.ai 帳號** — 需登入，不支援 API Key 認證（建議 Max 訂閱）
+- **tmux** — `brew install tmux`
+- **EClaw Channel API Key** — 從 [EClaw Portal](https://eclawbot.com) 取得（格式：`eck_...`）
+- **公開 URL**（用於接收 webhook）：
+  - [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/)（推薦）
+  - 或 [ngrok](https://ngrok.com/)
 
-## 快速開始
+## 安裝步驟
 
-### 1. 安裝 Fakechat Plugin
-
-```bash
-# 啟動 Claude Code
-claude
-
-# 在 Claude Code 內安裝 fakechat
-/plugin install fakechat@claude-plugins-official
-
-# 退出
-/exit
-```
-
-### 2. 取得 EClaw Channel API Key
-
-1. 前往 [EClaw Portal](https://eclawbot.com) → Settings → Channel API
-2. 點擊「Create API Key」
-3. 複製 API Key（格式：`eck_...`）
-
-### 3. Clone 並安裝
+### 1. Clone 專案
 
 ```bash
 git clone https://github.com/HankHuang0516/claude-code-eclaw-channel.git
@@ -59,111 +59,146 @@ cd claude-code-eclaw-channel
 bun install
 ```
 
-### 4. 設定公開 URL
+### 2. 安裝 Fakechat Plugin
+
+```bash
+# 啟動 Claude Code
+claude
+
+# 在 Claude Code 中安裝 fakechat plugin
+/plugin install fakechat@claude-plugins-official
+
+# 退出 Claude Code
+/exit
+```
+
+### 3. 取得 EClaw Channel API Key
+
+1. 前往 [EClaw Portal](https://eclawbot.com) → Settings → Channel API
+2. 點擊「Create API Key」
+3. 複製 API Key（格式：`eck_...`）
+
+### 4. 建立公開 URL
 
 Bridge 需要一個公開 URL 來接收 EClaw 的 webhook 推送。
 
-**Cloudflare Tunnel（推薦）：**
+**Cloudflare Tunnel（推薦，固定 URL）：**
 ```bash
-# Quick Tunnel（臨時 URL）
+# Quick Tunnel（臨時 URL，測試用）
 cloudflared tunnel --url http://localhost:18800
 
-# 或 Named Tunnel（固定 URL）
+# Named Tunnel（固定 URL，正式環境）
 cloudflared tunnel route dns <tunnel-name> eclaw-bot.yourdomain.com
 ```
 
-**ngrok：**
+**ngrok（替代方案）：**
 ```bash
 ngrok http 18800
 ```
 
-### 5. 啟動 Claude Code + Fakechat Channel
+### 5. 設定環境變數
 
+複製範例設定檔並填入你的值：
 ```bash
-# 用 tmux 背景運行
-tmux new-session -d -s eclaw-bot
-
-tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
+cp .mcp.json.example .mcp.json
 ```
 
-在 tmux 中等 Claude Code 完全啟動（看到 `Listening for channel messages`）。
+編輯 `.mcp.json`，填入你的 `ECLAW_API_KEY` 和 `ECLAW_WEBHOOK_URL`。
 
-### 6. 啟動 Bridge
+## 環境變數
+
+| 變數 | 必填 | 說明 | 預設值 |
+|------|:----:|------|--------|
+| `ECLAW_API_KEY` | ✅ | Channel API Key（`eck_...`） | — |
+| `ECLAW_WEBHOOK_URL` | ✅ | 公開 URL（不含 `/eclaw-webhook` 路徑） | — |
+| `ECLAW_API_BASE` | | EClaw API 基底 URL | `https://eclawbot.com` |
+| `ECLAW_WEBHOOK_PORT` | | Webhook 監聽 port | `18800` |
+| `ECLAW_BOT_NAME` | | Bot 顯示名稱 | `Claude Bot` |
+| `FAKECHAT_WS` | | Fakechat WebSocket URL（bridge 模式用） | `ws://localhost:8787/ws` |
+
+## 啟動方式
+
+使用 tmux 在背景運行兩個 session：
+
+### Bridge 模式（推薦）
 
 ```bash
-# 在另一個 tmux session 啟動 bridge
-tmux new-session -d -s eclaw-bridge
+# Session 1：啟動 Claude Code + fakechat channel
+tmux new-session -d -s eclaw-bot
+tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
 
+# 等待 Claude Code 完全啟動（看到 "Listening for channel messages"）
+
+# Session 2：啟動 Bridge
+tmux new-session -d -s eclaw-bridge
 tmux send-keys -t eclaw-bridge 'cd /path/to/claude-code-eclaw-channel && \
-  ECLAW_API_KEY=eck_你的key \
-  ECLAW_WEBHOOK_URL=https://你的公開URL \
-  ECLAW_BOT_NAME=我的Bot \
+  ECLAW_API_KEY=eck_your_key \
+  ECLAW_WEBHOOK_URL=https://your-public-url \
+  ECLAW_BOT_NAME=My_Bot \
   bun bridge.ts' Enter
 ```
 
-### 7. 驗證
+### 驗證啟動狀態
 
 ```bash
-# 檢查 bridge 狀態
+# 檢查 bridge 健康狀態
 curl http://localhost:18800/health
 
 # 檢查 log
 cat /tmp/eclaw-bridge.log
 
-# 手動測試
+# 手動傳送測試訊息
 curl -X POST http://localhost:18800/eclaw-webhook \
   -H "Content-Type: application/json" \
-  -d '{"deviceId":"test","entityId":0,"text":"Hello!","from":"test"}'
+  -d '{"deviceId":"test","entityId":0,"text":"Hello!","from":"tester"}'
 ```
 
-## 環境變數
+## 檔案結構
 
-| 變數 | 必填 | 說明 | 預設值 |
-|------|------|------|--------|
-| `ECLAW_API_KEY` | ✅ | Channel API Key（`eck_...`） | — |
-| `ECLAW_WEBHOOK_URL` | ✅ | 公開 URL（不含 `/eclaw-webhook`） | — |
-| `ECLAW_API_BASE` | | EClaw API 基底 URL | `https://eclawbot.com` |
-| `ECLAW_WEBHOOK_PORT` | | Webhook 監聽 port | `18800` |
-| `ECLAW_BOT_NAME` | | Bot 顯示名稱 | `Claude Bot` |
-| `FAKECHAT_WS` | | Fakechat WebSocket URL | `ws://localhost:8787/ws` |
+```
+.
+├── bridge.ts           # Bridge 模式：webhook → WebSocket → fakechat
+├── server.ts           # Server 模式：原生 MCP Channel plugin
+├── package.json
+├── .mcp.json.example   # MCP 設定範例（複製為 .mcp.json 使用）
+├── .claude-plugin/     # Claude Code plugin 定義
+│   └── plugin.json
+├── Dockerfile          # Docker 容器化部署（實驗性）
+├── AGENTS.md           # Agent 行為指引
+├── SOUL.md             # Bot 人設定義
+├── TOOLS.md            # 可用工具文件
+├── IDENTITY.md         # Bot 身份資訊
+├── MEMORY.md           # 記憶機制說明
+├── ECLAW_API.md        # EClaw API 參考文件
+└── memory/             # Bot 對話記憶儲存
+```
 
-## 運作原理
+## 限制事項
 
-1. **EClaw 推送訊息** → webhook POST 到 `bridge.ts` 的 `/eclaw-webhook`
-2. **Bridge 轉發** → 透過 WebSocket 送到 fakechat plugin
-3. **Fakechat 觸發 MCP notification** → Claude Code 收到 channel event
-4. **Claude 處理並回覆** → 呼叫 fakechat 的 `reply` tool
-5. **Bridge 攔截回覆** → 從 WebSocket 收到 assistant 回覆
-6. **Bridge 轉發到 EClaw API** → 使用者在 EClaw App 收到回覆
-
-## 與 OpenClaw 的差異
-
-| | OpenClaw | Claude Code + Bridge |
-|---|---|---|
-| **認證** | Anthropic API Key（付費） | claude.ai 帳號（Max 訂閱） |
-| **運行方式** | Docker 容器，背景常駐 | tmux session，interactive |
-| **同時多 Bot** | 每個容器一個 Bot | 一個帳號一個 session |
-| **適合** | 多 Bot、API token 充足 | 單 Bot、善用 Max 訂閱額度 |
+- **週使用量限制** — claude.ai 帳號有每週使用上限（Max 方案約 5x），達到上限後 Claude 將無法回覆
+- **需要互動式 session** — Claude Code 必須在 tmux 等互動式終端中運行，不能完全 daemon 化
+- **一個帳號對應一個 session** — 每個 claude.ai 帳號同一時間只能運行一個 Claude Code channel session
+- **Webhook 需公開 URL** — 本地開發需透過 Cloudflare Tunnel 或 ngrok 暴露 port
 
 ## 疑難排解
 
 ### Bridge 無法連接 fakechat WebSocket
 
-確認 Claude Code + fakechat 先啟動：
+確認 Claude Code + fakechat 已啟動：
 ```bash
-curl http://localhost:8787/  # 應該回傳 HTML
+curl http://localhost:8787/  # 應回傳 HTML
 ```
 
 ### EClaw 訊息沒有到達 Claude Code
 
 1. 檢查 bridge log：`cat /tmp/eclaw-bridge.log`
-2. 確認 webhook 通：`curl http://localhost:18800/health`
-3. 確認 WebSocket 連線：health 回應的 `wsConnected` 應為 `true`
+2. 確認 webhook 可達：`curl http://localhost:18800/health`
+3. 確認 WebSocket 已連線：health 回應中 `wsConnected` 應為 `true`
 
 ### Claude Code 收到訊息但沒回覆
 
-- 檢查 claude.ai 使用量限制（76% weekly limit 等）
-- 在 tmux 中手動跟 Claude 說一句話激活 session
+- 檢查 claude.ai 使用量限制（可能已達週上限）
+- 在 tmux session 中手動輸入訊息以激活 session
 
 ### 502 Bad Gateway（Cloudflare Tunnel）
 
