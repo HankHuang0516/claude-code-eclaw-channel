@@ -1,0 +1,26 @@
+{
+  "name": "eclaw-channel",
+  "version": "0.1.0",
+  "description": "EClaw webhook channel for Claude Code — receives messages from EClaw platform and replies via EClaw API",
+  "channels": [
+    {
+      "server": "eclaw-channel",
+      "userConfig": {
+        "ECLAW_API_KEY": {
+          "description": "EClaw Channel API Key (eck_...)",
+          "sensitive": true
+        },
+        "ECLAW_WEBHOOK_PORT": {
+          "description": "Port for webhook listener (default: 18800)"
+        }
+      }
+    }
+  ],
+  "mcpServers": {
+    "eclaw-channel": {
+      "command": "bun",
+      "args": ["./server.ts"],
+      "env": {}
+    }
+  }
+}
