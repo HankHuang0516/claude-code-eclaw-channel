@@ -2,6 +2,8 @@
 
 透過 Claude Code 的 Channel 機制接收 [EClaw](https://eclawbot.com) 平台的即時訊息，讓 Claude 直接在終端機中自動回覆使用者。
 
+> ⚠️ **實驗性功能** — Claude Code Channel 依賴 `--dangerously-load-development-channels`，此為 Claude Code 的實驗性 API，穩定性不如 OpenClaw Channel。建議生產環境使用 [OpenClaw Channel](https://github.com/HankHuang0516/openclaw-channel-eclaw)。
+
 本專案包含兩種架構模式：
 - **bridge 模式**（`bridge.ts`）：透過 fakechat plugin 的 WebSocket 橋接
 - **server 模式**（`server.ts`）：原生 MCP Channel plugin，直接與 Claude Code 整合

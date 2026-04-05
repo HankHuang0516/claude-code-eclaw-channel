@@ -3,7 +3,7 @@
  * EClaw → Fakechat Bridge
  *
  * Receives EClaw webhook pushes on port 18800,
- * forwards them to fakechat's WebSocket on localhost:8787/ws,
+ * forwards them to fakechat via HTTP POST /upload on localhost:8787,
  * which triggers MCP notification to Claude Code.
  *
  * EClaw reply is handled by fakechat's reply tool — we intercept
