@@ -182,13 +182,140 @@ curl -X POST http://localhost:18800/eclaw-webhook \
 - **一個帳號對應一個 session** — 每個 claude.ai 帳號同一時間只能運行一個 Claude Code channel session
 - **Webhook 需公開 URL** — 本地開發需透過 Cloudflare Tunnel 或 ngrok 暴露 port
 
+## 重啟 / 維護 Workflow
+
+Claude Code Channel 需要手動管理 tmux session。以下是常見操作的完整流程。
+
+### 完整重啟（推薦，解決大多數問題）
+
+```bash
+# 1. 停掉 bridge
+pkill -f "bun.*bridge.ts"
+
+# 2. 停掉 Claude Code
+tmux kill-session -t eclaw-bot 2>/dev/null
+
+# 3. 等 3 秒讓 port 釋放
+sleep 3
+
+# 4. 重新啟動 Claude Code + fakechat
+tmux new-session -d -s eclaw-bot
+tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
+
+# 5. 等 Claude Code 完全啟動（約 10-15 秒）
+sleep 15
+
+# 6. 確認 fakechat 已啟動
+curl -s http://localhost:8787/ > /dev/null && echo "✅ fakechat OK" || echo "❌ fakechat 未啟動"
+
+# 7. 重新啟動 bridge
+tmux new-session -d -s eclaw-bridge
+tmux send-keys -t eclaw-bridge 'cd /path/to/claude-code-eclaw-channel && \
+  ECLAW_API_KEY=eck_your_key \
+  ECLAW_WEBHOOK_URL=https://your-public-url \
+  ECLAW_BOT_NAME=My_Bot \
+  bun bridge.ts' Enter
+
+# 8. 等 bridge 啟動（約 5 秒）
+sleep 5
+
+# 9. 驗證全部元件
+echo "=== Health Check ==="
+curl -s http://localhost:8787/ > /dev/null && echo "✅ fakechat (8787)" || echo "❌ fakechat"
+curl -s http://localhost:18800/health | grep -q "wsConnected.*true" && echo "✅ bridge (18800) + WS connected" || echo "❌ bridge"
+```
+
+### 只重啟 Claude Code（安裝新 MCP 後）
+
+Bot 要求你重啟 Claude Code 載入新 MCP 時：
+
+```bash
+# 1. 先停 bridge（避免推送到斷線的 session）
+pkill -f "bun.*bridge.ts"
+
+# 2. 在 tmux 裡重啟 Claude Code
+tmux send-keys -t eclaw-bot C-c C-c  # 送兩次 Ctrl+C 停止
+sleep 3
+tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
+sleep 15
+
+# 3. 確認 fakechat 啟動後，重啟 bridge
+curl -s http://localhost:8787/ > /dev/null && echo "✅ fakechat OK"
+tmux new-session -d -s eclaw-bridge
+tmux send-keys -t eclaw-bridge 'cd /path/to/claude-code-eclaw-channel && \
+  ECLAW_API_KEY=eck_your_key \
+  ECLAW_WEBHOOK_URL=https://your-public-url \
+  ECLAW_BOT_NAME=My_Bot \
+  bun bridge.ts' Enter
+```
+
+### 只重啟 Bridge（webhook 設定改變後）
+
+```bash
+pkill -f "bun.*bridge.ts"
+sleep 2
+cd /path/to/claude-code-eclaw-channel && \
+  ECLAW_API_KEY=eck_your_key \
+  ECLAW_WEBHOOK_URL=https://your-public-url \
+  ECLAW_BOT_NAME=My_Bot \
+  nohup bun bridge.ts > /dev/null 2>&1 &
+sleep 3
+curl -s http://localhost:18800/health
+```
+
+### 查看 tmux session 狀態
+
+```bash
+# 列出所有 session
+tmux ls
+
+# 查看 Claude Code 畫面
+tmux attach -t eclaw-bot
+# 按 Ctrl+B 然後 D 離開（不會關掉 session）
+
+# 查看 bridge 畫面
+tmux attach -t eclaw-bridge
+```
+
+---
+
 ## 疑難排解
+
+### 快速健康檢查
+
+```bash
+echo "=== 元件狀態 ==="
+curl -s http://localhost:8787/ > /dev/null 2>&1 && echo "✅ fakechat (8787)" || echo "❌ fakechat 未啟動 → 重啟 Claude Code"
+curl -s http://localhost:18800/health 2>&1 | grep -q "wsConnected.*true" && echo "✅ bridge (18800)" || echo "❌ bridge 未啟動或 WS 斷線"
+curl -s -o /dev/null -w "%{http_code}" -X POST "https://YOUR_URL/eclaw-webhook" -H "Content-Type: application/json" -d '{}' 2>&1 | grep -q "200" && echo "✅ Cloudflare Tunnel" || echo "❌ Tunnel 斷線"
+tmux has-session -t eclaw-bot 2>/dev/null && echo "✅ tmux eclaw-bot" || echo "❌ tmux session 不存在"
+tmux has-session -t eclaw-bridge 2>/dev/null && echo "✅ tmux eclaw-bridge" || echo "❌ tmux bridge session 不存在"
+cat /tmp/eclaw-bridge.log 2>/dev/null | tail -3
+```
+
+### 常見問題
+
+| 症狀 | 原因 | 解法 |
+|------|------|------|
+| EClaw 訊息完全沒到 | Tunnel 斷了 / bridge 沒跑 | 執行健康檢查，重啟 bridge |
+| bridge log 顯示 "Forwarded" 但沒回覆 | fakechat WS 斷線或 Claude Code idle | 完整重啟 |
+| Claude Code 顯示 "Listening" 但不處理 | 需要先互動一次激活 session | 在 tmux 裡手動輸入一句話 |
+| 回覆一下有一下沒有 | Claude Code channel 實驗性限制 | 正常現象，考慮改用 OpenClaw |
+| "Weekly limit reached" | claude.ai 用量到頂 | 等每週重置，或改用 OpenClaw + API Key |
+| 安裝新 MCP 後 bot 說要重啟 | Claude Code 需重新載入 | 按「只重啟 Claude Code」流程操作 |
+| bridge log: "WS error" 一直重連 | Claude Code / fakechat 沒啟動 | 先確認 `curl localhost:8787` 有回應 |
+| 502 Bad Gateway | Tunnel 指向錯誤 port | 確認指向 18800（bridge），不是 8787 |
 
 ### Bridge 無法連接 fakechat WebSocket
 
-確認 Claude Code + fakechat 已啟動：
 ```bash
+# 確認 fakechat 在跑
 curl http://localhost:8787/  # 應回傳 HTML
+
+# 如果沒回應，重啟 Claude Code
+tmux kill-session -t eclaw-bot
+tmux new-session -d -s eclaw-bot
+tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
 ```
 
 ### EClaw 訊息沒有到達 Claude Code
@@ -196,15 +323,7 @@ curl http://localhost:8787/  # 應回傳 HTML
 1. 檢查 bridge log：`cat /tmp/eclaw-bridge.log`
 2. 確認 webhook 可達：`curl http://localhost:18800/health`
 3. 確認 WebSocket 已連線：health 回應中 `wsConnected` 應為 `true`
-
-### Claude Code 收到訊息但沒回覆
-
-- 檢查 claude.ai 使用量限制（可能已達週上限）
-- 在 tmux session 中手動輸入訊息以激活 session
-
-### 502 Bad Gateway（Cloudflare Tunnel）
-
-確認 tunnel 指向正確的 port（18800，不是 8787）。
+4. 如果都正常但 Claude Code 沒反應，在 tmux 裡手動輸入一句話激活 session
 
 ## License
 
