@@ -126,10 +126,12 @@ cp .mcp.json.example .mcp.json
 
 ```bash
 # Session 1：啟動 Claude Code + fakechat channel
+#   --dangerously-skip-permissions 避免確認 prompt 卡住整個 session
 tmux new-session -d -s eclaw-bot
-tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
+tmux send-keys -t eclaw-bot 'claude --dangerously-skip-permissions --channels plugin:fakechat@claude-plugins-official' Enter
 
-# 等待 Claude Code 完全啟動（看到 "Listening for channel messages"）
+# 等待 Claude Code 完全啟動（約 15 秒）
+sleep 15
 
 # Session 2：啟動 Bridge
 tmux new-session -d -s eclaw-bridge
@@ -139,6 +141,8 @@ tmux send-keys -t eclaw-bridge 'cd /path/to/claude-code-eclaw-channel && \
   ECLAW_BOT_NAME=My_Bot \
   bun bridge.ts' Enter
 ```
+
+> ⚠️ `--dangerously-skip-permissions` 會跳過所有確認提示（檔案讀寫、指令執行等）。如果沒加這個 flag，任何需要確認的操作都會卡住 session，導致後續訊息無法處理。
 
 ### 驗證啟動狀態
 
@@ -200,7 +204,7 @@ sleep 3
 
 # 4. 重新啟動 Claude Code + fakechat
 tmux new-session -d -s eclaw-bot
-tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
+tmux send-keys -t eclaw-bot 'claude --dangerously-skip-permissions --channels plugin:fakechat@claude-plugins-official' Enter
 
 # 5. 等 Claude Code 完全啟動（約 10-15 秒）
 sleep 15
@@ -236,7 +240,7 @@ pkill -f "bun.*bridge.ts"
 # 2. 在 tmux 裡重啟 Claude Code
 tmux send-keys -t eclaw-bot C-c C-c  # 送兩次 Ctrl+C 停止
 sleep 3
-tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
+tmux send-keys -t eclaw-bot 'claude --dangerously-skip-permissions --channels plugin:fakechat@claude-plugins-official' Enter
 sleep 15
 
 # 3. 確認 fakechat 啟動後，重啟 bridge
@@ -315,7 +319,7 @@ curl http://localhost:8787/  # 應回傳 HTML
 # 如果沒回應，重啟 Claude Code
 tmux kill-session -t eclaw-bot
 tmux new-session -d -s eclaw-bot
-tmux send-keys -t eclaw-bot 'claude --channels plugin:fakechat@claude-plugins-official' Enter
+tmux send-keys -t eclaw-bot 'claude --dangerously-skip-permissions --channels plugin:fakechat@claude-plugins-official' Enter
 ```
 
 ### EClaw 訊息沒有到達 Claude Code
