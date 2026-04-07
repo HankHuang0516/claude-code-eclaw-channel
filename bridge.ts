@@ -187,15 +187,26 @@ Bun.serve({
         // Prepend sender info
         const fullText = `[EClaw from ${from}] ${displayText}`;
 
-        log(`Webhook received: "${fullText.slice(0, 80)}" → forwarding to fakechat WS`);
+        log(`Webhook received (${fullText.length} chars): "${fullText.slice(0, 500).replace(/\n/g, "\\n")}${fullText.length > 500 ? "…" : ""}" → forwarding to fakechat`);
 
-        // Send to fakechat via WebSocket
-        if (ws && wsConnected) {
-          const id = crypto.randomUUID();
-          ws.send(JSON.stringify({ id, text: fullText }));
-          log("Forwarded to fakechat WebSocket");
-        } else {
-          log("WARNING: fakechat WebSocket not connected!");
+        // Send to fakechat via HTTP POST /upload (triggers MCP notification)
+        // WebSocket only broadcasts to browser UI, does NOT trigger deliver()
+        const id = crypto.randomUUID();
+        const form = new FormData();
+        form.set("id", id);
+        form.set("text", fullText);
+        try {
+          const resp = await fetch("http://localhost:8787/upload", {
+            method: "POST",
+            body: form,
+          });
+          if (resp.ok) {
+            log("Forwarded to fakechat via /upload (MCP notification triggered)");
+          } else {
+            log(`Fakechat /upload failed (${resp.status})`);
+          }
+        } catch (err: any) {
+          log(`Fakechat /upload error: ${err.message}`);
         }
 
         return Response.json({ ok: true });
