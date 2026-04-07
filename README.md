@@ -74,6 +74,22 @@ claude
 /exit
 ```
 
+### 2.1 套用 Fakechat Instructions Patch（必要）
+
+官方 fakechat plugin 的預設 instructions 太寬鬆，Claude Code 收到 channel 訊息時可能只在 transcript 顯示文字，**沒實際呼叫 `reply` tool 送回**，導致 EClaw 使用者收不到回覆。
+
+執行 patch 套用我們的中英雙語強制規則（每次 fakechat plugin 更新後都要重跑）：
+
+```bash
+./patch-fakechat.sh
+```
+
+腳本會：
+1. 自動定位 fakechat plugin 安裝路徑（cache + marketplace mirror）
+2. 備份原始 `server.ts.original`
+3. 替換 instructions 為強制 reply tool 規則（含 auto i18n）
+4. 同步到 marketplace dir 確保 Claude Code 載入修改版
+
 ### 3. 取得 EClaw Channel API Key
 
 1. 前往 [EClaw Portal](https://eclawbot.com) → Settings → Channel API
