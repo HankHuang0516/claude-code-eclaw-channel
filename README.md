@@ -195,6 +195,80 @@ curl -X POST http://localhost:18800/eclaw-webhook \
 └── memory/             # Bot 對話記憶儲存
 ```
 
+## 互動式權限確認 (Interactive Permission Approval)
+
+### 問題背景
+
+Claude Code 原生的權限 prompt 在 tmux session 中會**阻塞整個 channel**：
+任何需要確認的操作（讀寫 `.claude/` 底下的設定、執行敏感指令）都會讓 Claude
+卡在互動 prompt，導致後續 EClaw 訊息無法處理。目前的 workaround 是加上
+`--dangerously-skip-permissions`，但這等於**完全關閉**所有權限檢查。
+
+### 解決方案
+
+Bridge 新增了一個 `POST /ask` long-poll 端點，搭配 Claude Code 的
+`PreToolUse` hook，把權限確認**推到 EClaw 使用者的手機**上：
+
+```
+Claude Code 要執行 Bash / Write / Edit (.claude/...)
+    │
+    ▼
+PreToolUse hook (hooks/pre-tool-use.sh)
+    │ POST /ask {tool, command, file_path, reason}
+    ▼
+bridge.ts  ─── 產生 ask_id，送出含按鈕的 card 訊息
+    │
+    ▼
+EClaw App 顯示：✅ 同意 / ✅ 全程允許 / ❌ 拒絕
+    │  使用者點擊
+    ▼
+EClaw webhook (event: card_action) → bridge
+    │ resolve(action)
+    ▼
+hook 拿到 action → exit 0 (allow) / exit 2 (deny)
+```
+
+整個流程是 **long-poll，沒有 timeout**，bridge 會一直等到使用者做出決定為止。
+
+### 安裝 hook
+
+```bash
+mkdir -p ~/.claude/hooks
+cp hooks/pre-tool-use.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/pre-tool-use.sh
+```
+
+然後編輯 `~/.claude/settings.json`，加入：
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/pre-tool-use.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+預設 bridge URL 是 `http://localhost:18800`，可透過環境變數 `ECLAW_BRIDGE_URL`
+覆寫。Hook log 寫到 `/tmp/eclaw-hook.log`。
+
+### 限制
+
+- **只攔截 `.claude/` 底下的操作** — 其他 Bash / Write / Edit 直接放行，避免
+  無關的操作也跳到 EClaw 打擾使用者。範圍可在 `pre-tool-use.sh` 裡的
+  `case` 區塊自行擴充。
+- **沒有 timeout** — 使用者不回覆 hook 就會一直等，Claude Code 會卡住。
+  如果不想被卡住可以在 hook 最前面加 `--max-time`。
+- **`approve_always` 目前等同 `approve`** — 還沒實作 allowlist 持久化
+  （TODO 標在 hook script 裡）。
+- **需要 `jq`** — hook script 用 `jq` 解析 hook JSON，沒安裝會直接放行。
+
 ## 限制事項
 
 - **週使用量限制** — claude.ai 帳號有每週使用上限（Max 方案約 5x），達到上限後 Claude 將無法回覆

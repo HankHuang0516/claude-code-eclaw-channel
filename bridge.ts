@@ -29,6 +29,13 @@ let lastDeviceId: string | null = null;
 let lastEntityId: number | null = null;
 let botSecret: string | null = null;
 
+// ── Pending /ask requests (PreToolUse hook long-poll) ──
+interface PendingAsk {
+  resolve: (action: string) => void;
+  timestamp: number;
+}
+const pendingAsks: Map<string, PendingAsk> = new Map();
+
 // ── WebSocket connection to fakechat ──
 let ws: WebSocket | null = null;
 let wsConnected = false;
@@ -69,25 +76,28 @@ function connectWs() {
   };
 }
 
-async function forwardReplyToEClaw(text: string) {
+async function forwardReplyToEClaw(text: string, card?: any) {
   if (!lastDeviceId || lastEntityId === null) {
     log("Cannot forward reply: no deviceId/entityId");
     return;
   }
 
-  log(`Forwarding reply to EClaw: "${text.slice(0, 50)}..." device=${lastDeviceId} entity=${lastEntityId}`);
+  log(`Forwarding reply to EClaw: "${text.slice(0, 50)}..." device=${lastDeviceId} entity=${lastEntityId}${card ? " (with card)" : ""}`);
+
+  const payload: any = {
+    channel_api_key: API_KEY,
+    deviceId: lastDeviceId,
+    entityId: lastEntityId,
+    botSecret: botSecret || "",
+    message: text,
+    state: "IDLE",
+  };
+  if (card) payload.card = card;
 
   const resp = await fetch(`${API_BASE}/api/channel/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      channel_api_key: API_KEY,
-      deviceId: lastDeviceId,
-      entityId: lastEntityId,
-      botSecret: botSecret || "",
-      message: text,
-      state: "IDLE",
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (resp.ok) {
@@ -161,9 +171,67 @@ Bun.serve({
       return Response.json({ ok: true, channel: "eclaw-bridge", wsConnected });
     }
 
+    // ── POST /ask — long-poll PreToolUse hook integration ──
+    if (req.method === "POST" && url.pathname === "/ask") {
+      try {
+        const body: any = await req.json();
+        const { tool, command, file_path, reason } = body;
+        const ask_id = crypto.randomUUID();
+
+        const target = command || file_path || "(unknown)";
+        const message = `⚠️ Claude 想執行 ${tool}: ${target}\n原因: ${reason || "N/A"}`;
+        const card = {
+          buttons: [
+            { id: "approve", label: "✅ 同意", style: "primary" },
+            { id: "approve_always", label: "✅ 全程允許", style: "secondary" },
+            { id: "deny", label: "❌ 拒絕", style: "danger" },
+          ],
+          ask_id,
+        };
+
+        log(`/ask received: tool=${tool} ask_id=${ask_id} target="${String(target).slice(0, 100)}"`);
+
+        // Create a promise that resolves when the user clicks a button
+        const actionPromise = new Promise<string>((resolve) => {
+          pendingAsks.set(ask_id, { resolve, timestamp: Date.now() });
+        });
+
+        // Send the card to EClaw
+        try {
+          await forwardReplyToEClaw(message, card);
+        } catch (err: any) {
+          log(`/ask forward failed: ${err.message}`);
+          pendingAsks.delete(ask_id);
+          return Response.json({ ok: false, error: err.message }, { status: 500 });
+        }
+
+        // Wait indefinitely for user action (no timeout)
+        const action = await actionPromise;
+        log(`/ask resolved: ask_id=${ask_id} action=${action}`);
+        return Response.json({ action });
+      } catch (err: any) {
+        log(`/ask error: ${err.message}`);
+        return Response.json({ ok: false, error: err.message }, { status: 500 });
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/eclaw-webhook") {
       try {
         const body: any = await req.json();
+
+        // ── Card action event from EClaw ──
+        if (body.event === "card_action") {
+          const ask_id: string = body.ask_id || body.card?.ask_id;
+          const action_id: string = body.action_id || body.action || body.button_id;
+          log(`Card action received: ask_id=${ask_id} action=${action_id}`);
+          if (ask_id && pendingAsks.has(ask_id)) {
+            const pending = pendingAsks.get(ask_id)!;
+            pending.resolve(action_id);
+            pendingAsks.delete(ask_id);
+            return Response.json({ ok: true, resolved: true });
+          }
+          return Response.json({ ok: true, resolved: false });
+        }
 
         const deviceId = body.deviceId;
         const entityId = body.entityId;
