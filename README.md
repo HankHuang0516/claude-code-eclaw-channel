@@ -197,6 +197,8 @@ curl -X POST http://localhost:18800/eclaw-webhook \
 
 ## 互動式權限確認 (Interactive Permission Approval)
 
+> ✅ **已驗證可用**（2026-04-08）— 端對端測試通過：Claude Code 觸發 `.claude/` 操作 → hook 攔截 → bridge 送 rich card → EClaw App 顯示按鈕 → 使用者點按 → Claude Code 執行/拒絕。
+
 ### 問題背景
 
 Claude Code 原生的權限 prompt 在 tmux session 中會**阻塞整個 channel**：
@@ -255,8 +257,28 @@ chmod +x ~/.claude/hooks/pre-tool-use.sh
 }
 ```
 
-預設 bridge URL 是 `http://localhost:18800`，可透過環境變數 `ECLAW_BRIDGE_URL`
-覆寫。Hook log 寫到 `/tmp/eclaw-hook.log`。
+建議在 `~/.claude/settings.json` 的 `env` 區塊明確設定 bridge URL：
+
+```json
+{
+  "env": {
+    "ECLAW_BRIDGE_URL": "http://localhost:18800"
+  }
+}
+```
+
+預設 bridge URL 也是 `http://localhost:18800`。Hook log 寫到 `/tmp/eclaw-hook.log`。
+
+> ⚠️ **修改 `~/.claude/settings.json` 後必須重啟 Claude Code session**（`tmux kill-session -t eclaw-bot && 重新啟動`），新 hook 才會載入。runtime 改 settings 不會生效。
+
+### 平台端依賴
+
+EClaw 平台需同時支援這兩個 endpoint 的 `card` 欄位（兩者都已合併並部署）：
+
+- `POST /api/transform`（botSecret auth）— [PR #1641](https://github.com/HankHuang0516/EClaw/pull/1641)
+- `POST /api/channel/message`（channel_api_key auth，bridge 用的）— [PR #1643](https://github.com/HankHuang0516/EClaw/pull/1643)
+
+如果你 fork 自己的 EClaw 部署，記得 cherry-pick 這兩個 PR。
 
 ### 限制
 
