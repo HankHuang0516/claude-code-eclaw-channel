@@ -61,15 +61,22 @@ cd claude-code-eclaw-channel
 bun install
 ```
 
-**macOS 使用者：** `bun install` 執行後 macOS 可能彈出「bun 想要取用下載項目」的權限視窗，點允許即可。若日後需要重設或預先授權，執行：
+### 2. macOS 權限設定（macOS 限定）
+
+`bun` 執行時需要存取檔案系統，macOS 首次執行會彈出授權視窗。執行以下腳本一次完成：
 
 ```bash
 ./setup-macos-permissions.sh
 ```
 
-此腳本會偵測目前的授權狀態，並自動開啟系統設定 → 隱私權與安全性 → 檔案與資料夾，引導完成一次性手動授權。
+腳本會：
+1. 偵測目前 terminal 的授權狀態（查 TCC.db）
+2. 若未授權，自動開啟**系統設定 → 隱私權與安全性 → 檔案與資料夾**
+3. 顯示分步驟引導，完成一次性手動點擊允許
 
-### 2. 安裝 Fakechat Plugin
+> Windows / Linux 用戶跳過此步驟。
+
+### 3. 安裝 Fakechat Plugin
 
 ```bash
 # 啟動 Claude Code
@@ -82,7 +89,7 @@ claude
 /exit
 ```
 
-### 2.1 套用 Fakechat Instructions Patch（必要）
+### 3.1 套用 Fakechat Instructions Patch（必要）
 
 官方 fakechat plugin 的預設 instructions 太寬鬆，Claude Code 收到 channel 訊息時可能只在 transcript 顯示文字，**沒實際呼叫 `reply` tool 送回**，導致 EClaw 使用者收不到回覆。
 
@@ -98,13 +105,13 @@ claude
 3. 替換 instructions 為強制 reply tool 規則（含 auto i18n）
 4. 同步到 marketplace dir 確保 Claude Code 載入修改版
 
-### 3. 取得 EClaw Channel API Key
+### 4. 取得 EClaw Channel API Key
 
 1. 前往 [EClaw Portal](https://eclawbot.com) → Settings → Channel API
 2. 點擊「Create API Key」
 3. 複製 API Key（格式：`eck_...`）
 
-### 4. 建立公開 URL
+### 5. 建立公開 URL
 
 Bridge 需要一個公開 URL 來接收 EClaw 的 webhook 推送。
 
@@ -122,7 +129,7 @@ cloudflared tunnel route dns <tunnel-name> eclaw-bot.yourdomain.com
 ngrok http 18800
 ```
 
-### 5. 設定環境變數
+### 6. 設定環境變數
 
 複製範例設定檔並填入你的值：
 ```bash
