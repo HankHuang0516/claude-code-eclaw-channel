@@ -61,6 +61,14 @@ cd claude-code-eclaw-channel
 bun install
 ```
 
+**macOS 使用者：** `bun install` 執行後 macOS 可能彈出「bun 想要取用下載項目」的權限視窗，點允許即可。若日後需要重設或預先授權，執行：
+
+```bash
+./setup-macos-permissions.sh
+```
+
+此腳本會偵測目前的授權狀態，並自動開啟系統設定 → 隱私權與安全性 → 檔案與資料夾，引導完成一次性手動授權。
+
 ### 2. 安裝 Fakechat Plugin
 
 ```bash
