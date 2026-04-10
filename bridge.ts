@@ -37,6 +37,15 @@ interface PendingAsk {
 }
 const pendingAsks: Map<string, PendingAsk> = new Map();
 
+// ── Current model state ──
+let currentModel = process.env.CLAUDE_MODEL || "claude-sonnet-4-20250514";
+
+const MODEL_OPTIONS: Record<string, { label: string; model: string }> = {
+  sonnet:  { label: "⚡ Sonnet",  model: "claude-sonnet-4-20250514" },
+  opus:    { label: "🧠 Opus",    model: "claude-opus-4-20250514" },
+  haiku:   { label: "🪶 Haiku",   model: "claude-haiku-4-20250514" },
+};
+
 // ── WebSocket connection to fakechat ──
 let ws: WebSocket | null = null;
 let wsConnected = false;
@@ -287,6 +296,52 @@ Bun.serve({
           const ask_id: string = body.ask_id || body.card?.ask_id;
           const action_id: string = body.action_id || body.action || body.button_id;
           log(`Card action received: ask_id=${ask_id} action=${action_id}`);
+
+          // ── /model card response: switch model + restart ──
+          if (ask_id?.startsWith("model_select_")) {
+            const chosen = MODEL_OPTIONS[action_id];
+            if (!chosen) {
+              log(`Unknown model action: ${action_id}`);
+              return Response.json({ ok: true, resolved: false });
+            }
+
+            log(`Model switch requested: ${currentModel} → ${chosen.model}`);
+            currentModel = chosen.model;
+
+            // Reply: switching...
+            forwardReplyToEClaw(`🔄 切換至 ${chosen.label}，重啟中...`).catch(() => {});
+
+            // Restart with new model
+            const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "restart-channel.sh");
+            const proc = Bun.spawn(["bash", scriptPath, "--force"], {
+              env: {
+                ...process.env,
+                CLAUDE_MODEL: chosen.model,
+                ECLAW_API_KEY: API_KEY,
+                ECLAW_WEBHOOK_URL: process.env.ECLAW_WEBHOOK_URL || "",
+                ECLAW_BOT_NAME: process.env.ECLAW_BOT_NAME || "",
+              },
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+
+            // Fire and don't block the webhook response
+            proc.exited.then(async (exitCode) => {
+              const stdout = await new Response(proc.stdout).text();
+              log(`Model switch restart completed: exit=${exitCode} stdout=${stdout.trim()}`);
+              if (exitCode === 0) {
+                await forwardReplyToEClaw(`✅ 已切換至 ${chosen.label} (${chosen.model})`).catch(() => {});
+              } else {
+                await forwardReplyToEClaw(`❌ 模型切換失敗: ${stdout.trim()}`).catch(() => {});
+              }
+              // Reconnect WS
+              if (ws) ws.close();
+              setTimeout(connectWs, 2000);
+            });
+
+            return Response.json({ ok: true, resolved: true });
+          }
+
           if (ask_id && pendingAsks.has(ask_id)) {
             const pending = pendingAsks.get(ask_id)!;
             pending.resolve(action_id);
@@ -308,6 +363,25 @@ Bun.serve({
         // Update state for reply routing
         if (deviceId) lastDeviceId = deviceId;
         if (entityId !== undefined) lastEntityId = entityId;
+
+        // ── Bridge commands: intercept before forwarding to Claude Code ──
+        const trimmedText = text.trim();
+
+        if (trimmedText === "/model" || trimmedText === "/模型") {
+          log(`/model command received from ${from}`);
+          const ask_id = `model_select_${Date.now()}`;
+          const currentLabel = Object.values(MODEL_OPTIONS).find(m => m.model === currentModel)?.label || currentModel;
+          const card = {
+            buttons: Object.entries(MODEL_OPTIONS).map(([id, opt]) => ({
+              id,
+              label: opt.label + (opt.model === currentModel ? " (目前)" : ""),
+              style: opt.model === currentModel ? "secondary" : "primary",
+            })),
+            ask_id,
+          };
+          await forwardReplyToEClaw(`🧠 目前模型: ${currentLabel}\n選擇要切換的模型：`, card);
+          return Response.json({ ok: true, handled: "model_select" });
+        }
 
         // Build message for fakechat
         let displayText = text;

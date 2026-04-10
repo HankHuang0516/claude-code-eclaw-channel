@@ -14,7 +14,8 @@ MAX_WAIT=45   # seconds to wait for fakechat to come back
 
 # Claude Code launch command
 CLAUDE_BIN="claude"
-CLAUDE_ARGS="--dangerously-skip-permissions"
+CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-20250514}"
+CLAUDE_ARGS="--dangerously-skip-permissions --model $CLAUDE_MODEL"
 
 # ── Helpers ──
 json_out() {
