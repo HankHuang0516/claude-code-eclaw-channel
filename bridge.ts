@@ -365,9 +365,10 @@ Bun.serve({
         if (entityId !== undefined) lastEntityId = entityId;
 
         // ── Bridge commands: intercept before forwarding to Claude Code ──
-        const trimmedText = text.trim();
+        // Extract the user's actual message (first line, before injected context)
+        const userText = text.split("\n")[0].trim();
 
-        if (trimmedText === "/model" || trimmedText === "/模型") {
+        if (userText === "/model" || userText === "/模型") {
           log(`/model command received from ${from}`);
           const ask_id = `model_select_${Date.now()}`;
           const currentLabel = Object.values(MODEL_OPTIONS).find(m => m.model === currentModel)?.label || currentModel;
