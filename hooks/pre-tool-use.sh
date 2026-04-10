@@ -43,7 +43,12 @@ case "$TOOL_NAME" in
   Write|Edit)
     FILE_PATH="$(printf '%s' "$TOOL_INPUT" | jq -r '.file_path // empty')"
     if printf '%s' "$FILE_PATH" | grep -qE '\.claude/'; then
-      SENSITIVE=1
+      # Whitelist: plans, todos, memory are safe for bot to write
+      if printf '%s' "$FILE_PATH" | grep -qE '\.claude/(plans|todos|memory)/'; then
+        SENSITIVE=0
+      else
+        SENSITIVE=1
+      fi
     fi
     ;;
   *)

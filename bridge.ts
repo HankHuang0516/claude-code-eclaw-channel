@@ -11,8 +11,9 @@
  */
 
 import { appendFileSync, readdirSync, readFileSync, unlinkSync, mkdirSync, existsSync, watchFile } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -211,6 +212,68 @@ Bun.serve({
         return Response.json({ action });
       } catch (err: any) {
         log(`/ask error: ${err.message}`);
+        return Response.json({ ok: false, error: err.message }, { status: 500 });
+      }
+    }
+
+    // ── POST /restart — External Claude channel restart ──
+    if (req.method === "POST" && url.pathname === "/restart") {
+      // Verify API key
+      const authKey = req.headers.get("x-api-key") || req.headers.get("authorization")?.replace("Bearer ", "");
+      if (!authKey || authKey !== API_KEY) {
+        log("/restart rejected: invalid API key");
+        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+      }
+
+      try {
+        const body: any = await req.json().catch(() => ({}));
+        const mode = body.mode || "--smart"; // --smart, --force, --bridge-only
+        const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "restart-channel.sh");
+
+        log(`/restart invoked with mode=${mode}`);
+
+        const proc = Bun.spawn(["bash", scriptPath, mode], {
+          env: {
+            ...process.env,
+            ECLAW_API_KEY: API_KEY,
+            ECLAW_WEBHOOK_URL: process.env.ECLAW_WEBHOOK_URL || "",
+            ECLAW_BOT_NAME: process.env.ECLAW_BOT_NAME || "",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+
+        // Wait with 90s timeout
+        const timeout = setTimeout(() => proc.kill(), 90000);
+        const exitCode = await proc.exited;
+        clearTimeout(timeout);
+
+        const stdout = await new Response(proc.stdout).text();
+        const stderr = await new Response(proc.stderr).text();
+
+        log(`/restart completed: exit=${exitCode} stdout=${stdout.trim()}`);
+        if (stderr) log(`/restart stderr: ${stderr.trim()}`);
+
+        // Try to parse JSON output from script
+        let result: any;
+        try {
+          result = JSON.parse(stdout.trim().split("\n").pop() || "{}");
+        } catch {
+          result = { ok: exitCode === 0, message: stdout.trim() };
+        }
+
+        // Reconnect WebSocket after restart
+        if (result.action === "restarted" || result.action === "bridge_restarted") {
+          log("Reconnecting WebSocket after restart...");
+          if (ws) {
+            ws.close();
+          }
+          setTimeout(connectWs, 2000);
+        }
+
+        return Response.json(result, { status: exitCode === 0 ? 200 : 500 });
+      } catch (err: any) {
+        log(`/restart error: ${err.message}`);
         return Response.json({ ok: false, error: err.message }, { status: 500 });
       }
     }
