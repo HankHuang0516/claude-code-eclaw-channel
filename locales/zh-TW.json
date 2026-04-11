@@ -1,0 +1,11 @@
+{
+  "ask.tool_prompt": "⚠️ Claude 想執行 {tool}: {target}\n原因: {reason}",
+  "ask.btn_approve": "✅ 同意",
+  "ask.btn_approve_always": "✅ 全程允許",
+  "ask.btn_deny": "❌ 拒絕",
+  "model.switching": "🔄 切換至 {label}，重啟中...",
+  "model.switch_ok": "✅ 已切換至 {label} ({model})",
+  "model.switch_fail": "❌ 模型切換失敗: {error}",
+  "model.current_suffix": "(目前)",
+  "model.select_prompt": "🧠 目前模型: {current}\n選擇要切換的模型："
+}

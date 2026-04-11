@@ -14,6 +14,7 @@ import { appendFileSync, readdirSync, readFileSync, unlinkSync, mkdirSync, exist
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { t, setLocale, detectLanguage } from "./i18n.ts";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -189,12 +190,12 @@ Bun.serve({
         const ask_id = crypto.randomUUID();
 
         const target = command || file_path || "(unknown)";
-        const message = `⚠️ Claude 想執行 ${tool}: ${target}\n原因: ${reason || "N/A"}`;
+        const message = t("ask.tool_prompt", { tool, target, reason: reason || "N/A" });
         const card = {
           buttons: [
-            { id: "approve", label: "✅ 同意", style: "primary" },
-            { id: "approve_always", label: "✅ 全程允許", style: "secondary" },
-            { id: "deny", label: "❌ 拒絕", style: "danger" },
+            { id: "approve", label: t("ask.btn_approve"), style: "primary" },
+            { id: "approve_always", label: t("ask.btn_approve_always"), style: "secondary" },
+            { id: "deny", label: t("ask.btn_deny"), style: "danger" },
           ],
           ask_id,
         };
@@ -309,7 +310,7 @@ Bun.serve({
             currentModel = chosen.model;
 
             // Reply: switching...
-            forwardReplyToEClaw(`🔄 切換至 ${chosen.label}，重啟中...`).catch(() => {});
+            forwardReplyToEClaw(t("model.switching", { label: chosen.label })).catch(() => {});
 
             // Restart with new model
             const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "restart-channel.sh");
@@ -330,9 +331,9 @@ Bun.serve({
               const stdout = await new Response(proc.stdout).text();
               log(`Model switch restart completed: exit=${exitCode} stdout=${stdout.trim()}`);
               if (exitCode === 0) {
-                await forwardReplyToEClaw(`✅ 已切換至 ${chosen.label} (${chosen.model})`).catch(() => {});
+                await forwardReplyToEClaw(t("model.switch_ok", { label: chosen.label, model: chosen.model })).catch(() => {});
               } else {
-                await forwardReplyToEClaw(`❌ 模型切換失敗: ${stdout.trim()}`).catch(() => {});
+                await forwardReplyToEClaw(t("model.switch_fail", { error: stdout.trim() })).catch(() => {});
               }
               // Reconnect WS
               if (ws) ws.close();
@@ -364,6 +365,9 @@ Bun.serve({
         if (deviceId) lastDeviceId = deviceId;
         if (entityId !== undefined) lastEntityId = entityId;
 
+        // ── Auto-detect language from user message ──
+        setLocale(detectLanguage(text));
+
         // ── Bridge commands: intercept before forwarding to Claude Code ──
         // Extract the user's actual message (first line, before injected context)
         const userText = text.split("\n")[0].trim();
@@ -375,12 +379,12 @@ Bun.serve({
           const card = {
             buttons: Object.entries(MODEL_OPTIONS).map(([id, opt]) => ({
               id,
-              label: opt.label + (opt.model === currentModel ? " (目前)" : ""),
+              label: opt.label + (opt.model === currentModel ? ` ${t("model.current_suffix")}` : ""),
               style: opt.model === currentModel ? "secondary" : "primary",
             })),
             ask_id,
           };
-          await forwardReplyToEClaw(`🧠 目前模型: ${currentLabel}\n選擇要切換的模型：`, card);
+          await forwardReplyToEClaw(t("model.select_prompt", { current: currentLabel }), card);
           return Response.json({ ok: true, handled: "model_select" });
         }
 
