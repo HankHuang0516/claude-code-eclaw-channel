@@ -1,0 +1,11 @@
+{
+  "ask.tool_prompt": "⚠️ Claude wants to run {tool}: {target}\nReason: {reason}",
+  "ask.btn_approve": "✅ Approve",
+  "ask.btn_approve_always": "✅ Approve All",
+  "ask.btn_deny": "❌ Deny",
+  "model.switching": "🔄 Switching to {label}, restarting...",
+  "model.switch_ok": "✅ Switched to {label} ({model})",
+  "model.switch_fail": "❌ Model switch failed: {error}",
+  "model.current_suffix": "(current)",
+  "model.select_prompt": "🧠 Current model: {current}\nSelect a model to switch to:"
+}
