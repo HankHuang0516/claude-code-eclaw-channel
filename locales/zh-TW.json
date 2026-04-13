@@ -7,5 +7,7 @@
   "model.switch_ok": "✅ 已切換至 {label} ({model})",
   "model.switch_fail": "❌ 模型切換失敗: {error}",
   "model.current_suffix": "(目前)",
-  "model.select_prompt": "🧠 目前模型: {current}\n選擇要切換的模型："
+  "model.select_prompt": "🧠 目前模型: {current}\n選擇要切換的模型：",
+  "auto_approve.enabled": "✅ 自動核准模式已開啟 — 所有工具請求將自動通過",
+  "auto_approve.disabled": "❌ 自動核准模式已關閉 — 恢復手動審核"
 }

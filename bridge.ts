@@ -38,6 +38,9 @@ interface PendingAsk {
 }
 const pendingAsks: Map<string, PendingAsk> = new Map();
 
+// ── Auto-approve mode (toggle via /auto_approve command) ──
+let autoApproveMode = false;
+
 // ── Current model state ──
 let currentModel = process.env.CLAUDE_MODEL || "claude-sonnet-4-20250514";
 
@@ -187,6 +190,13 @@ Bun.serve({
       try {
         const body: any = await req.json();
         const { tool, command, file_path, reason } = body;
+
+        // ── Auto-approve short-circuit ──
+        if (autoApproveMode) {
+          log(`/ask auto-approved: tool=${tool} target=${command || file_path}`);
+          return Response.json({ action: "approve" });
+        }
+
         const ask_id = crypto.randomUUID();
 
         const target = command || file_path || "(unknown)";
@@ -371,6 +381,16 @@ Bun.serve({
         // ── Bridge commands: intercept before forwarding to Claude Code ──
         // Extract the user's actual message (first line, before injected context)
         const userText = text.split("\n")[0].trim();
+
+        if (userText === "/auto_approve" || userText === "/自動核准") {
+          autoApproveMode = !autoApproveMode;
+          log(`Auto-approve toggled: ${autoApproveMode}`);
+          const msg = autoApproveMode
+            ? t("auto_approve.enabled")
+            : t("auto_approve.disabled");
+          await forwardReplyToEClaw(msg);
+          return Response.json({ ok: true, handled: "auto_approve" });
+        }
 
         if (userText === "/model" || userText === "/模型") {
           log(`/model command received from ${from}`);

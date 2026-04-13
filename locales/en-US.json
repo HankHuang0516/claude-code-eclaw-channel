@@ -7,5 +7,7 @@
   "model.switch_ok": "✅ Switched to {label} ({model})",
   "model.switch_fail": "❌ Model switch failed: {error}",
   "model.current_suffix": "(current)",
-  "model.select_prompt": "🧠 Current model: {current}\nSelect a model to switch to:"
+  "model.select_prompt": "🧠 Current model: {current}\nSelect a model to switch to:",
+  "auto_approve.enabled": "✅ Auto-approve ON — all tool requests will be approved automatically",
+  "auto_approve.disabled": "❌ Auto-approve OFF — back to manual review"
 }
