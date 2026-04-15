@@ -1,5 +1,9 @@
 # EClaw Channel Bridge for Claude Code
 
+> **TL;DR (English)** — Turn Claude Code into a chat agent. Receive messages from the EClaw mobile app (iOS/Android), reply from your terminal automatically, and approve dangerous ops from your phone. Two modes: a WebSocket bridge (`bridge.ts`) using the fakechat plugin, or a native MCP Channel server (`server.ts`). 5-minute setup on macOS, Bun + tmux. Full docs below in Chinese — key commands and API examples are bilingual.
+>
+> **Use cases**: remote Claude Code from phone · multi-user bot on a shared Claude subscription · mobile approval gate for `--dangerously-skip-permissions` · channel-based CI/CD commands.
+
 透過 Claude Code 的 Channel 機制接收 [EClaw](https://eclawbot.com) 平台的即時訊息，讓 Claude 直接在終端機中自動回覆使用者。
 
 > ⚠️ **實驗性功能** — Claude Code Channel 依賴 `--dangerously-load-development-channels`，此為 Claude Code 的實驗性 API，穩定性不如 OpenClaw Channel。建議生產環境使用 [OpenClaw Channel](https://github.com/HankHuang0516/openclaw-channel-eclaw)。
