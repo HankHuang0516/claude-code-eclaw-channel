@@ -54,7 +54,38 @@ const MODEL_OPTIONS: Record<string, { label: string; model: string }> = {
 let ws: WebSocket | null = null;
 let wsConnected = false;
 
+// Dedup forwarded replies by fakechat message id (5s TTL) to guard
+// against duplicate broadcasts from multiple WS subscriptions or
+// future re-fire paths.
+const forwardedMsgIds = new Map<string, number>();
+const FORWARD_DEDUP_TTL_MS = 5000;
+function markForwarded(id: string): boolean {
+  const now = Date.now();
+  for (const [k, ts] of forwardedMsgIds) {
+    if (now - ts > FORWARD_DEDUP_TTL_MS) forwardedMsgIds.delete(k);
+  }
+  if (forwardedMsgIds.has(id)) return false;
+  forwardedMsgIds.set(id, now);
+  return true;
+}
+
 function connectWs() {
+  // Close any existing socket before reconnecting so onmessage handlers
+  // from stale sockets don't fire on the same broadcast (root cause of
+  // duplicate chat_history rows per reply).
+  if (ws) {
+    try {
+      ws.onopen = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+    } catch (err: any) {
+      log(`Error closing stale WS: ${err.message}`);
+    }
+    ws = null;
+  }
+
   log(`Connecting to fakechat WS: ${FAKECHAT_WS}`);
   ws = new WebSocket(FAKECHAT_WS);
 
@@ -80,6 +111,11 @@ function connectWs() {
       log(`Fakechat message: ${JSON.stringify(data).slice(0, 200)}`);
       // If it's an assistant reply, forward to EClaw
       if (data.from === "assistant" && data.text && lastDeviceId && lastEntityId !== null) {
+        const msgId = typeof data.id === "string" ? data.id : null;
+        if (msgId && !markForwarded(msgId)) {
+          log(`Reply skipped (dup id=${msgId})`);
+          return;
+        }
         forwardReplyToEClaw(data.text).catch((err) => {
           log(`Reply forward error: ${err.message}`);
         });
