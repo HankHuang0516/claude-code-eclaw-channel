@@ -14,7 +14,12 @@
   "watchdog.btn_ack": "✅ Acknowledge",
   "watchdog.btn_interrupt": "⚡ Interrupt",
   "watchdog.btn_withdraw": "↩️ Withdraw",
-  "watchdog.ack_log": "User acknowledged busy state",
-  "watchdog.interrupt_log": "User interrupted Claude - re-injecting message",
-  "watchdog.withdraw_log": "User withdrew message - skipping"
+  "watchdog.ack_log": "User acknowledged wait, Claude continues processing",
+  "watchdog.interrupt_log": "User interrupted Claude's current task — re-injecting message",
+  "watchdog.withdraw_log": "User withdrew message — skipping",
+  "watchdog.diag_stuck_prompt": "🔧 Detected stuck confirmation prompt, auto-approved",
+  "watchdog.diag_idle": "🔄 Claude was idle but didn't reply, auto re-injected message",
+  "watchdog.diag_hook_pending": "⏳ Permission approval card already on EClaw, waiting for your click",
+  "watchdog.diag_crashed": "🔄 Claude Code session appears unresponsive, may need to restart eclaw-bot tmux session",
+  "watchdog.diag_busy": "⏳ Claude is working on a task, your second message is queued"
 }

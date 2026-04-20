@@ -279,7 +279,7 @@ function startWatchdogTimer() {
       case "stuck_prompt": {
         // Claude is stuck on a "Do you want to create/proceed" prompt.
         // Auto-approve silently — no card needed.
-        log("Watchdog: auto-approving stuck prompt (Down+Enter)");
+        log(`Watchdog: ${t("watchdog.diag_stuck_prompt")}`);
         const { execSync } = await import("node:child_process");
         try {
           execSync('tmux send-keys -t eclaw-bot Down Enter', { timeout: 5000 });
@@ -294,7 +294,7 @@ function startWatchdogTimer() {
       case "idle": {
         // Claude is idle (showing ❯ prompt) but didn't respond.
         // Re-inject the message silently.
-        log("Watchdog: Claude idle but didn't reply — re-injecting message");
+        log(`Watchdog: ${t("watchdog.diag_idle")}`);
         const { execSync } = await import("node:child_process");
         try {
           execSync(
@@ -311,7 +311,7 @@ function startWatchdogTimer() {
         // A PreToolUse hook /ask is already pending — the user already
         // has a hook approval card on their screen. Don't pile on with
         // a watchdog card.
-        log("Watchdog: hook /ask pending — skipping (card already on EClaw)");
+        log(`Watchdog: ${t("watchdog.diag_hook_pending")}`);
         watchdogTimer = null;
         watchdogFirstMsg = null;
         return;
@@ -319,9 +319,9 @@ function startWatchdogTimer() {
 
       case "crashed": {
         // Session appears dead. Notify user.
-        log("Watchdog: session appears crashed — notifying user");
+        log(`Watchdog: ${t("watchdog.diag_crashed")}`);
         try {
-          await forwardReplyToEClaw("🔄 Claude Code session 似乎已停止回應，可能需要重啟 eclaw-bot tmux session。");
+          await forwardReplyToEClaw(t("watchdog.diag_crashed"));
         } catch { /* best effort */ }
         watchdogTimer = null;
         watchdogFirstMsg = null;
@@ -340,7 +340,7 @@ function startWatchdogTimer() {
           ],
           ask_id,
         };
-        log(`Watchdog: Claude busy — sending card (ask_id=${ask_id})`);
+        log(`Watchdog: ${t("watchdog.diag_busy")} (ask_id=${ask_id})`);
         pendingWatchdogs.set(ask_id, {
           ask_id,
           timestamp: Date.now(),

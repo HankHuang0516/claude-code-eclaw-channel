@@ -11,10 +11,15 @@
   "auto_approve.enabled": "✅ 自動核准模式已開啟 — 所有工具請求將自動通過",
   "auto_approve.disabled": "❌ 自動核准模式已關閉 — 恢復手動審核",
   "watchdog.busy": "⏳ 正在處理中...新的訊息稍後讀取",
-  "watchdog.btn_ack": "✅ 確認",
-  "watchdog.btn_interrupt": "⚡ 打斷",
-  "watchdog.btn_withdraw": "↩️ 撤回",
-  "watchdog.ack_log": "使用者確認忙碌狀態",
-  "watchdog.interrupt_log": "使用者打斷 Claude — 重新注入訊息",
-  "watchdog.withdraw_log": "使用者撤回訊息 — 跳過處理"
+  "watchdog.btn_ack": "✅ 確認等待",
+  "watchdog.btn_interrupt": "⚡ 打斷任務",
+  "watchdog.btn_withdraw": "↩️ 撤回訊息",
+  "watchdog.ack_log": "使用者確認等待，Claude 繼續處理",
+  "watchdog.interrupt_log": "使用者打斷 Claude 當前任務 — 重新注入訊息",
+  "watchdog.withdraw_log": "使用者撤回訊息 — 跳過處理",
+  "watchdog.diag_stuck_prompt": "🔧 偵測到確認提示卡住，已自動放行",
+  "watchdog.diag_idle": "🔄 Claude 處於閒置狀態但未回覆，已自動重新注入訊息",
+  "watchdog.diag_hook_pending": "⏳ 權限確認卡片已在 EClaw 上，等待你點選",
+  "watchdog.diag_crashed": "🔄 Claude Code session 似乎已停止回應，可能需要重啟 eclaw-bot tmux session",
+  "watchdog.diag_busy": "⏳ Claude 正在執行任務，第二則訊息已排隊等待"
 }
