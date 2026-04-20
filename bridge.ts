@@ -711,12 +711,15 @@ Bun.serve({
           log(`Fakechat /upload error: ${err.message}`);
         }
 
-        // ── Start watchdog timer ──
-        // Only store the first message metadata (don't spam cards)
-        if (!watchdogFirstMsg) {
-          watchdogFirstMsg = { text: userText, from, timestamp: Date.now() };
+        // ── Start watchdog timer (only for real human messages) ──
+        // Skip automated sources: kanban, scheduled, system, entity:N (bot-to-bot)
+        const isHumanMessage = from === "web_chat" || from === "client" || from === "user";
+        if (isHumanMessage) {
+          if (!watchdogFirstMsg) {
+            watchdogFirstMsg = { text: userText, from, timestamp: Date.now() };
+          }
+          startWatchdogTimer();
         }
-        startWatchdogTimer();
 
         return Response.json({ ok: true });
       } catch (err: any) {
