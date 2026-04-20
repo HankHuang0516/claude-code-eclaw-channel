@@ -9,5 +9,12 @@
   "model.current_suffix": "(current)",
   "model.select_prompt": "🧠 Current model: {current}\nSelect a model to switch to:",
   "auto_approve.enabled": "✅ Auto-approve ON — all tool requests will be approved automatically",
-  "auto_approve.disabled": "❌ Auto-approve OFF — back to manual review"
+  "auto_approve.disabled": "❌ Auto-approve OFF — back to manual review",
+  "watchdog.busy": "⏳ Processing... new messages will be read later",
+  "watchdog.btn_ack": "✅ Acknowledge",
+  "watchdog.btn_interrupt": "⚡ Interrupt",
+  "watchdog.btn_withdraw": "↩️ Withdraw",
+  "watchdog.ack_log": "User acknowledged busy state",
+  "watchdog.interrupt_log": "User interrupted Claude - re-injecting message",
+  "watchdog.withdraw_log": "User withdrew message - skipping"
 }

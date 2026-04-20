@@ -38,6 +38,21 @@ interface PendingAsk {
 }
 const pendingAsks: Map<string, PendingAsk> = new Map();
 
+// ── Watchdog mechanism ──
+const WATCHDOG_TIMEOUT_S = parseInt(process.env.ECLAW_WATCHDOG_TIMEOUT || "30", 10);
+const WATCHDOG_ENABLED = (process.env.ECLAW_WATCHDOG_ENABLED || "true") !== "false";
+
+interface PendingWatchdog {
+  ask_id: string;
+  timestamp: number;
+  from: string;
+  text: string;
+}
+
+let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+let watchdogFirstMsg: { text: string; from: string; timestamp: number } | null = null;
+const pendingWatchdogs: Map<string, PendingWatchdog> = new Map(); // keyed by ask_id
+
 // ── Auto-approve mode (toggle via /auto_approve command) ──
 let autoApproveMode = false;
 
@@ -116,6 +131,8 @@ function connectWs() {
           log(`Reply skipped (dup id=${msgId})`);
           return;
         }
+        // Claude replied — clear all watchdog state
+        clearAllWatchdogState();
         forwardReplyToEClaw(data.text).catch((err) => {
           log(`Reply forward error: ${err.message}`);
         });
@@ -156,6 +173,54 @@ async function forwardReplyToEClaw(text: string, card?: any) {
     const errText = await resp.text();
     log(`Reply forward failed (${resp.status}): ${errText}`);
   }
+}
+
+// ── Watchdog helpers ──
+function clearWatchdog() {
+  if (watchdogTimer) {
+    clearTimeout(watchdogTimer);
+    watchdogTimer = null;
+  }
+  watchdogFirstMsg = null;
+}
+
+function clearAllWatchdogState() {
+  clearWatchdog();
+  pendingWatchdogs.clear();
+}
+
+function startWatchdogTimer() {
+  if (!WATCHDOG_ENABLED) return;
+  // Reset existing timer (debounce)
+  if (watchdogTimer) {
+    clearTimeout(watchdogTimer);
+  }
+  watchdogTimer = setTimeout(async () => {
+    if (!watchdogFirstMsg) return;
+    const ask_id = crypto.randomUUID();
+    const card = {
+      buttons: [
+        { id: "watchdog_ack", label: t("watchdog.btn_ack"), style: "primary" },
+        { id: "watchdog_interrupt", label: t("watchdog.btn_interrupt"), style: "danger" },
+        { id: "watchdog_withdraw", label: t("watchdog.btn_withdraw"), style: "secondary" },
+      ],
+      ask_id,
+    };
+    log(`Watchdog fired after ${WATCHDOG_TIMEOUT_S}s — sending busy card (ask_id=${ask_id})`);
+    pendingWatchdogs.set(ask_id, {
+      ask_id,
+      timestamp: Date.now(),
+      from: watchdogFirstMsg.from,
+      text: watchdogFirstMsg.text,
+    });
+    try {
+      await forwardReplyToEClaw(t("watchdog.busy"), card);
+    } catch (err: any) {
+      log(`Watchdog card send error: ${err.message}`);
+    }
+    watchdogTimer = null;
+    watchdogFirstMsg = null;
+  }, WATCHDOG_TIMEOUT_S * 1000);
 }
 
 // ── EClaw Registration ──
@@ -218,7 +283,15 @@ Bun.serve({
     const url = new URL(req.url);
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return Response.json({ ok: true, channel: "eclaw-bridge", wsConnected });
+      return Response.json({
+        ok: true,
+        channel: "eclaw-bridge",
+        wsConnected,
+        watchdogEnabled: WATCHDOG_ENABLED,
+        watchdogTimeoutSeconds: WATCHDOG_TIMEOUT_S,
+        watchdogTimerActive: watchdogTimer !== null,
+        pendingWatchdogs: pendingWatchdogs.size,
+      });
     }
 
     // ── POST /ask — long-poll PreToolUse hook integration ──
@@ -389,6 +462,32 @@ Bun.serve({
             return Response.json({ ok: true, resolved: true });
           }
 
+          // ── Watchdog card response ──
+          if (ask_id && pendingWatchdogs.has(ask_id)) {
+            const wd = pendingWatchdogs.get(ask_id)!;
+            pendingWatchdogs.delete(ask_id);
+
+            if (action_id === "watchdog_ack") {
+              log(t("watchdog.ack_log"));
+              // Do nothing — Claude will reply when ready
+            } else if (action_id === "watchdog_interrupt") {
+              log(t("watchdog.interrupt_log"));
+              // Interrupt Claude Code via tmux and re-inject
+              try {
+                Bun.spawnSync(["tmux", "send-keys", "-t", "eclaw-bot", "Escape"]);
+                await new Promise((r) => setTimeout(r, 2000));
+                Bun.spawnSync(["tmux", "send-keys", "-t", "eclaw-bot",
+                  "請立刻用 reply tool 回覆最新的 channel 訊息", "Enter"]);
+              } catch (err: any) {
+                log(`Watchdog interrupt tmux error: ${err.message}`);
+              }
+            } else if (action_id === "watchdog_withdraw") {
+              log(t("watchdog.withdraw_log"));
+              // Do NOT re-inject, just clear
+            }
+            return Response.json({ ok: true, resolved: true });
+          }
+
           if (ask_id && pendingAsks.has(ask_id)) {
             const pending = pendingAsks.get(ask_id)!;
             pending.resolve(action_id);
@@ -474,6 +573,13 @@ Bun.serve({
         } catch (err: any) {
           log(`Fakechat /upload error: ${err.message}`);
         }
+
+        // ── Start watchdog timer ──
+        // Only store the first message metadata (don't spam cards)
+        if (!watchdogFirstMsg) {
+          watchdogFirstMsg = { text: userText, from, timestamp: Date.now() };
+        }
+        startWatchdogTimer();
 
         return Response.json({ ok: true });
       } catch (err: any) {

@@ -9,5 +9,12 @@
   "model.current_suffix": "(目前)",
   "model.select_prompt": "🧠 目前模型: {current}\n選擇要切換的模型：",
   "auto_approve.enabled": "✅ 自動核准模式已開啟 — 所有工具請求將自動通過",
-  "auto_approve.disabled": "❌ 自動核准模式已關閉 — 恢復手動審核"
+  "auto_approve.disabled": "❌ 自動核准模式已關閉 — 恢復手動審核",
+  "watchdog.busy": "⏳ 正在處理中...新的訊息稍後讀取",
+  "watchdog.btn_ack": "✅ 確認",
+  "watchdog.btn_interrupt": "⚡ 打斷",
+  "watchdog.btn_withdraw": "↩️ 撤回",
+  "watchdog.ack_log": "使用者確認忙碌狀態",
+  "watchdog.interrupt_log": "使用者打斷 Claude — 重新注入訊息",
+  "watchdog.withdraw_log": "使用者撤回訊息 — 跳過處理"
 }
