@@ -189,6 +189,76 @@ function clearAllWatchdogState() {
   pendingWatchdogs.clear();
 }
 
+/**
+ * Diagnose WHY Claude hasn't replied by reading the tmux screen.
+ *
+ * Returns one of:
+ *   "stuck_prompt"  — waiting on "Do you want to" / "Esc to cancel" confirmation
+ *   "idle"          — showing ❯ prompt, not busy, just didn't reply
+ *   "hook_pending"  — a PreToolUse /ask is in flight (user already has a card)
+ *   "busy"          — actively thinking / running tools
+ *   "crashed"       — session appears dead or not responding
+ */
+async function diagnoseTmuxState(): Promise<string> {
+  try {
+    const { execSync } = await import("node:child_process");
+    const screen = execSync("tmux capture-pane -t eclaw-bot -p 2>&1", {
+      timeout: 5000,
+      encoding: "utf-8",
+    });
+
+    // Check for pending hook /ask FIRST (pendingAsks Map has entries)
+    if (pendingAsks.size > 0) {
+      return "hook_pending";
+    }
+
+    // Stuck on a confirmation prompt
+    if (
+      screen.includes("Do you want to") ||
+      screen.includes("Esc to cancel") ||
+      screen.includes("Enter to confirm") ||
+      screen.includes("Enter to select")
+    ) {
+      return "stuck_prompt";
+    }
+
+    // Actively busy — thinking, tool-use, or streaming
+    if (
+      screen.includes("thinking") ||
+      screen.includes("tokens") ||
+      screen.includes("· ↑") ||
+      screen.includes("· ↓") ||
+      /\b(Channeling|Slithering|Sautéed|Infusing|Perusing|Coalescing|Evaporating|Wibbling|Pollinating|Shipping)\b/.test(screen)
+    ) {
+      return "busy";
+    }
+
+    // Idle — last line is the ❯ prompt with no activity indicator
+    const lines = screen.trim().split("\n").filter(Boolean);
+    const lastContentLine = lines[lines.length - 1] || "";
+    if (lastContentLine.includes("❯") || lastContentLine.includes("bypass permissions")) {
+      return "idle";
+    }
+
+    // Screen is empty or unrecognizable
+    if (screen.trim().length < 20) {
+      return "crashed";
+    }
+
+    // Default: assume busy
+    return "busy";
+  } catch {
+    // tmux not available or errored — can't diagnose
+    return "busy";
+  }
+}
+
+/** Helper to restart the watchdog with the same message context */
+function startWatchdog(text: string, from: string) {
+  watchdogFirstMsg = { text, from, timestamp: Date.now() };
+  startWatchdogTimer();
+}
+
 function startWatchdogTimer() {
   if (!WATCHDOG_ENABLED) return;
   // Reset existing timer (debounce)
@@ -197,29 +267,96 @@ function startWatchdogTimer() {
   }
   watchdogTimer = setTimeout(async () => {
     if (!watchdogFirstMsg) return;
-    const ask_id = crypto.randomUUID();
-    const card = {
-      buttons: [
-        { id: "watchdog_ack", label: t("watchdog.btn_ack"), style: "primary" },
-        { id: "watchdog_interrupt", label: t("watchdog.btn_interrupt"), style: "danger" },
-        { id: "watchdog_withdraw", label: t("watchdog.btn_withdraw"), style: "secondary" },
-      ],
-      ask_id,
-    };
-    log(`Watchdog fired after ${WATCHDOG_TIMEOUT_S}s — sending busy card (ask_id=${ask_id})`);
-    pendingWatchdogs.set(ask_id, {
-      ask_id,
-      timestamp: Date.now(),
-      from: watchdogFirstMsg.from,
-      text: watchdogFirstMsg.text,
-    });
-    try {
-      await forwardReplyToEClaw(t("watchdog.busy"), card);
-    } catch (err: any) {
-      log(`Watchdog card send error: ${err.message}`);
+
+    // ── Diagnostic watchdog: read tmux screen to determine WHY Claude
+    // hasn't replied, then take the appropriate action silently when
+    // possible — only bother the user with a rich card when Claude is
+    // genuinely busy on a long task. ──
+    const diagnosis = await diagnoseTmuxState();
+    log(`Watchdog fired after ${WATCHDOG_TIMEOUT_S}s — diagnosis: ${diagnosis}`);
+
+    switch (diagnosis) {
+      case "stuck_prompt": {
+        // Claude is stuck on a "Do you want to create/proceed" prompt.
+        // Auto-approve silently — no card needed.
+        log("Watchdog: auto-approving stuck prompt (Down+Enter)");
+        const { execSync } = await import("node:child_process");
+        try {
+          execSync('tmux send-keys -t eclaw-bot Down Enter', { timeout: 5000 });
+        } catch { /* tmux not available */ }
+        // Re-arm watchdog in case there are more prompts queued
+        watchdogTimer = null;
+        watchdogFirstMsg = watchdogFirstMsg; // keep for next round
+        startWatchdog(watchdogFirstMsg!.text, watchdogFirstMsg!.from);
+        return;
+      }
+
+      case "idle": {
+        // Claude is idle (showing ❯ prompt) but didn't respond.
+        // Re-inject the message silently.
+        log("Watchdog: Claude idle but didn't reply — re-injecting message");
+        const { execSync } = await import("node:child_process");
+        try {
+          execSync(
+            `tmux send-keys -t eclaw-bot '請用 reply tool 回覆最新的 channel 訊息' Enter`,
+            { timeout: 5000 },
+          );
+        } catch { /* tmux not available */ }
+        watchdogTimer = null;
+        watchdogFirstMsg = null;
+        return;
+      }
+
+      case "hook_pending": {
+        // A PreToolUse hook /ask is already pending — the user already
+        // has a hook approval card on their screen. Don't pile on with
+        // a watchdog card.
+        log("Watchdog: hook /ask pending — skipping (card already on EClaw)");
+        watchdogTimer = null;
+        watchdogFirstMsg = null;
+        return;
+      }
+
+      case "crashed": {
+        // Session appears dead. Notify user.
+        log("Watchdog: session appears crashed — notifying user");
+        try {
+          await forwardReplyToEClaw("🔄 Claude Code session 似乎已停止回應，可能需要重啟 eclaw-bot tmux session。");
+        } catch { /* best effort */ }
+        watchdogTimer = null;
+        watchdogFirstMsg = null;
+        return;
+      }
+
+      case "busy":
+      default: {
+        // Claude is genuinely busy (thinking/tool-use). Send rich card.
+        const ask_id = crypto.randomUUID();
+        const card = {
+          buttons: [
+            { id: "watchdog_ack", label: t("watchdog.btn_ack"), style: "primary" },
+            { id: "watchdog_interrupt", label: t("watchdog.btn_interrupt"), style: "danger" },
+            { id: "watchdog_withdraw", label: t("watchdog.btn_withdraw"), style: "secondary" },
+          ],
+          ask_id,
+        };
+        log(`Watchdog: Claude busy — sending card (ask_id=${ask_id})`);
+        pendingWatchdogs.set(ask_id, {
+          ask_id,
+          timestamp: Date.now(),
+          from: watchdogFirstMsg.from,
+          text: watchdogFirstMsg.text,
+        });
+        try {
+          await forwardReplyToEClaw(t("watchdog.busy"), card);
+        } catch (err: any) {
+          log(`Watchdog card send error: ${err.message}`);
+        }
+        watchdogTimer = null;
+        watchdogFirstMsg = null;
+        return;
+      }
     }
-    watchdogTimer = null;
-    watchdogFirstMsg = null;
   }, WATCHDOG_TIMEOUT_S * 1000);
 }
 
