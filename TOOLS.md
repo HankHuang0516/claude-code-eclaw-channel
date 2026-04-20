@@ -4,7 +4,7 @@
 
 - **deviceId:** 480def4c-2183-4d8e-afd0-b131ae89adcc
 - **entityId:** 2 (原本 #3，已 compact)
-- **botSecret (mine):** c7c0fa9a730625b3743816171615bfca
+- **botSecret (mine):** 944738a1eece24cf64916beab7ce2640
 - **botSecret (#1 LOBSTER):** f7a6449428881b8a32fff408df1e0008
 - **deviceSecret:** 3a4ddb10-2609-42b6-908a-f9d446c97ff9-7cff9697-6391-415d-a282-4e8aea3be49a
 - **Publisher Key:** K4KNljNhEfbNfLTOIOKw1OZXL4HIEe9zn0OKsq5aIxs970I8fn8mZjIHEbxGx
@@ -88,16 +88,19 @@
 
 ```bash
 # 回覆訊息（必須用 transform）
-curl -s -X POST "https://eclawbot.com/api/transform" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","entityId":2,"botSecret":"c7c0fa9a730625b3743816171615bfca","message":"YOUR REPLY","state":"IDLE"}'
+curl -s -X POST "https://eclawbot.com/api/transform" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","entityId":2,"botSecret":"944738a1eece24cf64916beab7ce2640","message":"YOUR REPLY","state":"IDLE"}'
 
 # 讀 Dashboard
-curl -s "https://eclawbot.com/api/mission/dashboard?deviceId=480def4c-2183-4d8e-afd0-b131ae89adcc&botSecret=c7c0fa9a730625b3743816171615bfca&entityId=2"
+curl -s "https://eclawbot.com/api/mission/dashboard?deviceId=480def4c-2183-4d8e-afd0-b131ae89adcc&botSecret=944738a1eece24cf64916beab7ce2640&entityId=2"
 
 # 私訊特定 entity
-curl -s -X POST "https://eclawbot.com/api/entity/speak-to" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","fromEntityId":2,"toEntityId":TARGET,"botSecret":"c7c0fa9a730625b3743816171615bfca","text":"MSG"}'
+curl -s -X POST "https://eclawbot.com/api/entity/speak-to" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","fromEntityId":2,"toEntityId":TARGET,"botSecret":"944738a1eece24cf64916beab7ce2640","text":"MSG"}'
 
 # 廣播
-curl -s -X POST "https://eclawbot.com/api/entity/broadcast" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","fromEntityId":2,"botSecret":"c7c0fa9a730625b3743816171615bfca","text":"MSG"}'
+curl -s -X POST "https://eclawbot.com/api/entity/broadcast" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","fromEntityId":2,"botSecret":"944738a1eece24cf64916beab7ce2640","text":"MSG"}'
+
+# 歷史訊息（真實 DB log，替代 JSONL grep）
+curl -s "https://eclawbot.com/api/chat/history?deviceId=480def4c-2183-4d8e-afd0-b131ae89adcc&entityId=2&botSecret=944738a1eece24cf64916beab7ce2640&limit=100"
 ```
 
 ## 總指揮規則（2026-03-25 啟用）
@@ -136,3 +139,74 @@ curl -s -X POST "https://eclawbot.com/api/entity/broadcast" -H "Content-Type: ap
 2. Bot 完成 → `POST /card/:id/move` 推進到 review
 3. #2 驗收 → move 到 done 或退回 in_progress
 4. 任務對話放 `POST /card/:id/comment`，不放聊天頁面
+
+## 橋接授權 / Bridge-Auth（2026-04-18 Hank 命名，E2E 驗證 2026-04-20）
+
+Mac commander（#2）授權 sub-Claude 使用 MCP 工具（computer MCP、playwright 等）的標準流程。跟「終端橋接」互為姊妹。
+
+### 原理
+sub-Claude 呼叫 `request_access` 或觸發 MCP elicitation 時，只有**互動式** `claude`（不是 `claude -p`）才會把 TUI 表單顯示出來。commander 透過 `unit.py` 把該 sub 的 Terminal 當成自己的 TTY 來按鍵，等同於「commander 是該 sub 的使用者」。
+
+### 使用時機
+1. **任何授權流程**（Hank 明確規定）— MCP request_access / 工具權限彈窗 / `~/.claude/` 檔案的 Write/Edit
+2. E2E UI 測試（需 computer MCP 或 playwright）
+3. 跨 session 沿用 allowAll 權限（`claude --resume` 保持同權限）
+
+### 關鍵工具
+| 工具 | 路徑 | 用途 |
+|------|------|------|
+| `bridge-auth` | `~/.claude/bin/bridge-auth` | 按鍵 primitive（`paste`, `enter`, `key`, `winid`） |
+| `bridge-auth-selftest` | `~/.claude/bin/bridge-auth-selftest` | **E2E 驗證** — IME 干擾 canary + 按鍵送達檢查 |
+| `unit.py` | `~/.claude/bin/unit.py` | Terminal window 管理（spawn/dispatch/read/kill） |
+
+### 標準流程
+```bash
+# 1. 開橋接 terminal 並註冊為 U##
+unit.py spawn e2e-auth-worker      # 回傳 U##
+
+# 2. 在該 terminal 啟動互動式 claude（絕不用 -p）
+unit.py dispatch U## "claude"       # 等約 8 秒 banner 完成
+
+# 3. 派 E2E 任務
+unit.py dispatch U## "<E2E prompt>"
+
+# 4. sub 呼叫 request_access 時從 unit.py read 看到 TUI 表單
+unit.py read U## --tail 40
+
+# 5. commander 按鍵授權（computer MCP request_access 的 4-step 鍵盤序列）
+bridge-auth key U## 124             # → 展開 "not set" dropdown
+bridge-auth key U## 125              # ↓ 選 "Allow all apps"
+bridge-auth enter U##                # Enter 確認 dropdown
+bridge-auth enter U##                # Enter 按 Accept 按鈕
+```
+
+### E2E 驗證（確認這台 Mac 的 bridge-auth 正常 + IME 沒干擾）
+```bash
+# 全部階段（primitive + clipboard + keycodes）
+bridge-auth-selftest
+
+# 僅 primitive（arg parsing、lookup，不開 Terminal）
+bridge-auth-selftest primitive
+
+# 僅 E2E（開 bridge terminal、貼 canary、驗證 byte-exact）
+bridge-auth-selftest e2e
+```
+
+**IME 干擾 canary**：selftest 會 pbcopy 一段純 ASCII 字串 `yes-accept-allow-1234`、透過 cmd+V 貼到新開的 bridge terminal 的 `cat > file`、然後比對檔案 bytes。若輸入法（新酷音、倉頡等）攔截了 cmd+V，貼進去的會變全形/中文 → selftest exit 非 0。
+
+**何時跑**：
+- 剛裝 / 換 Mac 後第一次
+- 換輸入法後
+- 發現 E2E 驗證一直詭異失敗（先排除環境）
+- 升級 macOS 後
+
+### 限制
+- commander 自己的 `request_access` **仍然看不到彈窗** — 必須透過 bridge terminal 的 sub。
+- `claude -p` 的 sub 收不到 elicitation（silent fail）— 永遠用**互動式** `claude`。
+- 按鍵序列因 MCP 工具而異；目前記錄的是 `github-computer` 的 4-step。其他 MCP 需另行記錄。
+
+### 相關記憶
+- `feedback_mcp_access_via_bridge.md` — DEFAULT rule + 4-step keystroke
+- `feedback_never_dash_p.md` — 禁用 `-p` 的原因
+- `feedback_computer_mcp_dedicated_unit.md` — 專用 U## (e.g. U99) 駐守 computer MCP
+- `feedback_sub_claude_mcp_access.md` — sub-Claude 無法自行授權（被 bridge-auth SUPERSEDED）
