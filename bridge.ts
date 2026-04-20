@@ -711,14 +711,20 @@ Bun.serve({
           log(`Fakechat /upload error: ${err.message}`);
         }
 
-        // ── Start watchdog timer (only for real human messages) ──
-        // Skip automated sources: kanban, scheduled, system, entity:N (bot-to-bot)
+        // ── Watchdog: only trigger when a NEW human message arrives while
+        // a PREVIOUS human message is still unacknowledged (no Claude reply
+        // since the first message). The first message is normal — Claude
+        // needs time to process. The watchdog fires when the SECOND message
+        // piles up, meaning the user is waiting and Claude is still busy. ──
         const isHumanMessage = from === "web_chat" || from === "client" || from === "user";
         if (isHumanMessage) {
           if (!watchdogFirstMsg) {
+            // First human message — just track it, no watchdog yet.
             watchdogFirstMsg = { text: userText, from, timestamp: Date.now() };
+          } else {
+            // Second+ human message while first is still pending — arm watchdog.
+            startWatchdogTimer();
           }
-          startWatchdogTimer();
         }
 
         return Response.json({ ok: true });
