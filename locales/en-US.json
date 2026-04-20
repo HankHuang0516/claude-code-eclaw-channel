@@ -21,5 +21,7 @@
   "watchdog.diag_idle": "🔄 Claude was idle but didn't reply, auto re-injected message",
   "watchdog.diag_hook_pending": "⏳ Permission approval card already on EClaw, waiting for your click",
   "watchdog.diag_crashed": "🔄 Claude Code session appears unresponsive, may need to restart eclaw-bot tmux session",
-  "watchdog.diag_busy": "⏳ Claude is working on a task, your second message is queued"
+  "watchdog.diag_busy": "⏳ Claude is working on a task, your second message is queued",
+  "error.reply_failed": "⚠️ EClaw reply failed ({error}). Check if bridge needs restart (re-register + bind to get fresh botSecret). Run: curl -s http://localhost:18800/health to verify bridge state.",
+  "error.no_device": "⚠️ Cannot reply: missing deviceId/entityId. Bridge may not have completed EClaw registration. Wait or restart bridge."
 }

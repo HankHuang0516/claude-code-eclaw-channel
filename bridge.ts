@@ -133,8 +133,10 @@ function connectWs() {
         }
         // Claude replied — clear all watchdog state
         clearAllWatchdogState();
-        forwardReplyToEClaw(data.text).catch((err) => {
+        forwardReplyToEClaw(data.text).catch(async (err) => {
           log(`Reply forward error: ${err.message}`);
+          // Feed error back to Claude so it can self-diagnose and retry
+          await notifyClaudeError(t("error.reply_failed", { error: err.message }));
         });
       }
     } catch {
@@ -146,6 +148,7 @@ function connectWs() {
 async function forwardReplyToEClaw(text: string, card?: any) {
   if (!lastDeviceId || lastEntityId === null) {
     log("Cannot forward reply: no deviceId/entityId");
+    await notifyClaudeError(t("error.no_device"));
     return;
   }
 
@@ -172,6 +175,33 @@ async function forwardReplyToEClaw(text: string, card?: any) {
   } else {
     const errText = await resp.text();
     log(`Reply forward failed (${resp.status}): ${errText}`);
+    throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Inject an error/system message back into fakechat so Claude Code sees it
+ * as a channel message and can self-diagnose. Uses the same /upload POST
+ * that inbound webhook messages use — this triggers an MCP notification
+ * that Claude's channel listener picks up.
+ */
+async function notifyClaudeError(message: string) {
+  const id = crypto.randomUUID();
+  const form = new FormData();
+  form.set("id", id);
+  form.set("text", `[BRIDGE ERROR] ${message}`);
+  try {
+    const resp = await fetch("http://localhost:8787/upload", {
+      method: "POST",
+      body: form,
+    });
+    if (resp.ok) {
+      log(`Error feedback injected to Claude: ${message.slice(0, 100)}`);
+    } else {
+      log(`Failed to inject error feedback (${resp.status})`);
+    }
+  } catch (err: any) {
+    log(`notifyClaudeError failed: ${err.message}`);
   }
 }
 

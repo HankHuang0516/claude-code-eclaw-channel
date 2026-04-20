@@ -21,5 +21,7 @@
   "watchdog.diag_idle": "🔄 Claude 處於閒置狀態但未回覆，已自動重新注入訊息",
   "watchdog.diag_hook_pending": "⏳ 權限確認卡片已在 EClaw 上，等待你點選",
   "watchdog.diag_crashed": "🔄 Claude Code session 似乎已停止回應，可能需要重啟 eclaw-bot tmux session",
-  "watchdog.diag_busy": "⏳ Claude 正在執行任務，第二則訊息已排隊等待"
+  "watchdog.diag_busy": "⏳ Claude 正在執行任務，第二則訊息已排隊等待",
+  "error.reply_failed": "⚠️ EClaw 回覆發送失敗 ({error})。請檢查 bridge 是否需要重啟（bridge 重啟後會重新 register + bind 取得新的 botSecret）。你可以用 exec tool 執行: curl -s http://localhost:18800/health 來確認 bridge 狀態。",
+  "error.no_device": "⚠️ 無法回覆：缺少 deviceId/entityId。Bridge 可能尚未完成 EClaw 註冊。請等待或重啟 bridge。"
 }
