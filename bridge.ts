@@ -368,10 +368,32 @@ function scheduleAutoWake() {
     try {
       const { execSync } = await import("node:child_process");
       const nudge = t("auto_wake.nudge");
-      // tmux send-keys: type the nudge then press Enter to submit
-      execSync(`tmux send-keys -t eclaw-bot ${JSON.stringify(nudge)} Enter`, {
+
+      // Guard against stuck input buffer: if a previous nudge's Enter
+      // didn't submit (happens during Claude state transitions), the
+      // text stays in the input prompt. If we type again, it stacks.
+      // Detect this and just press Enter to submit what's already there.
+      const screenBefore = execSync("tmux capture-pane -t eclaw-bot -p 2>&1", {
+        timeout: 3000,
+        encoding: "utf-8",
+      });
+      if (screenBefore.includes(nudge)) {
+        log(`Auto-wake: previous nudge still in buffer, just submitting Enter`);
+        execSync("tmux send-keys -t eclaw-bot Enter", { timeout: 2000 });
+        lastAutoWakeSent = now;
+        return;
+      }
+
+      // Clear any stray chars (Ctrl+U clears to line start), slight
+      // delays help avoid TTY races that swallow Enter during busy→idle
+      // state transitions.
+      execSync("tmux send-keys -t eclaw-bot C-u", { timeout: 2000 });
+      await new Promise((r) => setTimeout(r, 150));
+      execSync(`tmux send-keys -t eclaw-bot ${JSON.stringify(nudge)}`, {
         timeout: 3000,
       });
+      await new Promise((r) => setTimeout(r, 400));
+      execSync("tmux send-keys -t eclaw-bot Enter", { timeout: 2000 });
       lastAutoWakeSent = now;
       log(`Auto-wake nudge sent (eclaw-bot was idle)`);
     } catch (err: any) {
