@@ -389,11 +389,41 @@ function scheduleAutoWake() {
 
     const state = await diagnoseTmuxState();
     log(`Auto-wake tick@${pollAge}s: state=${state}`);
-    if (state === "stuck_prompt" || state === "hook_pending" || state === "crashed") {
-      // Other handlers deal with these states
-      log(`Auto-wake tick@${pollAge}s: bailing out (state=${state}, not retrying)`);
+
+    if (state === "hook_pending") {
+      // Permission approval card already on EClaw, user needs to click.
+      // Don't nudge — user interaction is the blocker, not Claude.
+      log(`Auto-wake tick@${pollAge}s: bailing out (hook_pending)`);
       return;
     }
+
+    if (state === "crashed") {
+      // Session looks dead — something outside our control. Bail out
+      // so we don't spam a dead session.
+      log(`Auto-wake tick@${pollAge}s: bailing out (crashed — session may need manual restart)`);
+      return;
+    }
+
+    if (state === "stuck_prompt") {
+      // Claude Code's built-in "Do you want to create/proceed?"
+      // confirmations that --dangerously-skip-permissions doesn't
+      // bypass. If we just bail out here, user messages sit forever.
+      // Auto-resolve: send Down+Enter to pick "Yes, and always allow"
+      // (2nd option, more permissive than Yes), then keep polling.
+      // This mirrors the previous hourly auto-approve cron but inline.
+      try {
+        const { execSync } = await import("node:child_process");
+        log(`Auto-wake tick@${pollAge}s: stuck_prompt detected → auto-sending Down+Enter`);
+        execSync("tmux send-keys -t eclaw-bot Down Enter", { timeout: 3000 });
+      } catch (err: any) {
+        log(`Auto-wake tick@${pollAge}s: stuck_prompt auto-resolve failed: ${err.message}`);
+      }
+      // Keep polling — after the prompt resolves, state should flip to
+      // busy (processing the approved tool) and eventually idle.
+      autoWakeTimer = setTimeout(tick, AUTO_WAKE_POLL_S * 1000);
+      return;
+    }
+
     if (state === "busy") {
       // busy → poll again soon, wait for idle
       autoWakeTimer = setTimeout(tick, AUTO_WAKE_POLL_S * 1000);
@@ -1037,9 +1067,20 @@ async function checkReplyEnforcer() {
   if (Date.now() - lastReplyEnforcerSent < 3 * 60_000) return;
 
   const state = await diagnoseTmuxState();
-  // stuck_prompt / hook_pending / crashed → other handlers deal with
-  // them; don't stack another reminder on top.
-  if (state === "stuck_prompt" || state === "hook_pending" || state === "crashed") return;
+  // hook_pending → user has a card to click, wait for them
+  // crashed → can't do anything
+  if (state === "hook_pending" || state === "crashed") return;
+
+  // stuck_prompt → Claude is blocked on an internal confirmation.
+  // Auto-resolve so the backlog message can proceed. This is separate
+  // from the nudge itself — schedule auto-wake to do the actual
+  // resolution + retry loop.
+  if (state === "stuck_prompt") {
+    log(`Reply enforcer: Claude stuck_prompt ${Math.round(ageMs / 60_000)}m without reply → triggering auto-wake to resolve`);
+    scheduleAutoWake();
+    lastReplyEnforcerSent = Date.now();
+    return;
+  }
 
   const preview = (watchdogFirstMsg?.text || "").slice(0, 80).replace(/\n/g, " ");
   const minutes = Math.round(ageMs / 60_000);
