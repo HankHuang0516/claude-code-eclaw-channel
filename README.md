@@ -551,15 +551,18 @@ tmux capture-pane -t eclaw-bot -p | tail -20  # 只讀，不輸入
 - 若 Claude 回 terminal 沒用 reply tool → 檢查 fakechat MCP 是否 `✔ connected`（`/mcp` 指令）
 - 若 `/mcp` 顯示 `plugin:fakechat:fakechat ✘ failed` → 有 orphan process 占用 port 8787
 
-**2026-04-21 用這個 workflow 抓到 6 個 bug**：
+**2026-04-21 用這個 workflow 抓到 7 個 bug**：
 1. `diagnoseTmuxState` 把歷史 "Sautéed" 誤判成 busy
 2. Auto-wake 一次性 setTimeout 沒重試
 3. Reply enforcer 只在 busy 觸發（漏掉 idle 無回覆的情況）
 4. Reply enforcer 只 notify，沒連動 auto-wake
 5. Nudge 文字沒含訊息內容，Claude 以為沒訊息
 6. /model 重啟 port 8787 orphan 沒清理導致 fakechat MCP failed
+7. **長閒置後**：Auto-wake 遇到 `stuck_prompt` 就放棄不重試 — 只有**把測試時間拉長到 6+ 分鐘間隔**才會觸發這個 bug（短間隔測試時 Claude 還在 busy 根本碰不到 stuck_prompt）
 
-完整修復見 [commit 067fc5b](https://github.com/HankHuang0516/claude-code-eclaw-channel/commit/067fc5b) 和 [e0440b8](https://github.com/HankHuang0516/claude-code-eclaw-channel/commit/e0440b8)。
+完整修復見 [commit 067fc5b](https://github.com/HankHuang0516/claude-code-eclaw-channel/commit/067fc5b) / [e0440b8](https://github.com/HankHuang0516/claude-code-eclaw-channel/commit/e0440b8) / [7642016](https://github.com/HankHuang0516/claude-code-eclaw-channel/commit/7642016)。
+
+**重要**：測試時**必須包含長間隔場景**（建議 ≥5 分鐘閒置後發訊息），因為多個 bug 只在真實使用模式下才會顯現。Bug 7 就是在快速迭代測試下完全看不到的——每次測試間隔太短，Claude 一直 busy 根本不會進入 stuck_prompt 狀態。
 
 ### 常見問題
 
