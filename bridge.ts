@@ -42,11 +42,16 @@ const pendingAsks: Map<string, PendingAsk> = new Map();
 const WATCHDOG_TIMEOUT_S = parseInt(process.env.ECLAW_WATCHDOG_TIMEOUT || "30", 10);
 const WATCHDOG_ENABLED = (process.env.ECLAW_WATCHDOG_ENABLED || "true") !== "false";
 
-// ── Kanban filter (2026-04-21 incident fix) ──
+// ── Kanban filter (2026-04-21 incident — opt-out only) ──
 // Kanban automation messages (status changes, task reminders, scheduled
-// triggers) are NOT user questions. When flooded (100+/day), they fill
-// Claude's context with noise. Default: drop at bridge.
-const FORWARD_KANBAN = (process.env.ECLAW_FORWARD_KANBAN || "false") === "true";
+// triggers) ARE the bot's work queue — removing them destroys the
+// point of having a kanban. Default: forward. Only drop when
+// ECLAW_FORWARD_KANBAN=false is explicitly set (emergency mute during
+// context overflow recovery).
+//
+// The real fix for the 2026-04-21 incident is the context pressure
+// monitor + reply enforcer below, NOT filtering kanban out.
+const FORWARD_KANBAN = (process.env.ECLAW_FORWARD_KANBAN || "true") !== "false";
 
 // ── Context pressure monitor (2026-04-21 incident fix) ──
 // eclaw-bot can silently hit 111k/200k context. Auto-warn at 20%, auto
@@ -746,14 +751,13 @@ Bun.serve({
         // Prepend sender info
         const fullText = `[EClaw from ${from}] ${displayText}`;
 
-        // ── Kanban filter (2026-04-21 incident fix) ──
-        // Kanban automation (status changes, reminders, scheduled task
-        // triggers) should NOT pollute Claude's context. They are not
-        // user questions — they are automation noise. Drop at bridge
-        // unless explicitly opted-in via ECLAW_FORWARD_KANBAN=true.
+        // ── Kanban emergency mute (opt-out only) ──
+        // Kanban IS the bot's work queue — normally we forward it. Only
+        // drop when ECLAW_FORWARD_KANBAN=false is explicitly set during
+        // context overflow recovery.
         if (from === "kanban" && !FORWARD_KANBAN) {
-          log(`Kanban message filtered (${fullText.length} chars): "${fullText.slice(0, 200).replace(/\n/g, "\\n")}…" — set ECLAW_FORWARD_KANBAN=true to forward`);
-          return Response.json({ ok: true, filtered: "kanban" });
+          log(`Kanban message muted (ECLAW_FORWARD_KANBAN=false): "${fullText.slice(0, 120).replace(/\n/g, "\\n")}…"`);
+          return Response.json({ ok: true, muted: "kanban" });
         }
 
         log(`Webhook received (${fullText.length} chars): "${fullText.slice(0, 500).replace(/\n/g, "\\n")}${fullText.length > 500 ? "…" : ""}" → forwarding to fakechat`);

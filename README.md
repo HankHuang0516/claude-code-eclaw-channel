@@ -154,7 +154,7 @@ cp .mcp.json.example .mcp.json
 | `FAKECHAT_WS` | | Fakechat WebSocket URL（bridge 模式用） | `ws://localhost:8787/ws` |
 | `ECLAW_WATCHDOG_TIMEOUT` | | Watchdog 超時秒數 | `30` |
 | `ECLAW_WATCHDOG_ENABLED` | | 是否啟用看門狗機制 | `true` |
-| `ECLAW_FORWARD_KANBAN` | | 是否轉發 kanban 自動訊息（預設過濾） | `false` |
+| `ECLAW_FORWARD_KANBAN` | | 轉發 kanban 工作佇列訊息（設 `false` 為緊急靜音用） | `true` |
 | `ECLAW_CONTEXT_WATCH_ENABLED` | | Context 壓力監控（20% 警告 / 5% auto-clear） | `true` |
 | `ECLAW_REPLY_TIMEOUT_S` | | Claude 收訊後未用 reply tool 的提醒秒數 | `120` |
 
@@ -536,17 +536,17 @@ tmux send-keys -t eclaw-bot 'claude --dangerously-skip-permissions --channels pl
 
 **現象**：eclaw-bot Claude Code channel 連續 13 小時未回覆，期間累積 140 筆 pending webhook 訊息（104 筆是 kanban 自動觸發）。eclaw-bot session 吃到 111.9k / 200k tokens，Claude 放棄 `reply` tool，改用 Playwright 開瀏覽器點 EClaw web UI 的 ↩ 按鈕，導致回覆完全沒進到正常流程。
 
-**根因（三層疊加）**：
-1. **Kanban 噪音污染** — kanban 每 15–30 分鐘自動觸發一張卡進 Claude context，沒人主動要求回覆
+**根因（兩個 bot 端失效 + 一個人為補救缺失）**：
+1. **Bot 沒在處理 kanban 任務** — kanban 卡累積是**結果**不是原因；bot 的正常職責就是消化工作佇列
 2. **Context 壓力無監測** — 近滿時 Claude 行為變異（放棄 MCP tool、改跑瀏覽器自動化）
 3. **Reply tool 強制失效** — `patch-fakechat.sh` 的 instructions 在 context 壓力下被 Claude「忽略」
 
-**修復**（本次提交）：
-- `ECLAW_FORWARD_KANBAN=false`（預設）— bridge 直接丟棄 `from=kanban` 訊息，不進 fakechat
+**修復**（本次提交，bridge 側自動化）：
 - `ECLAW_CONTEXT_WATCH_ENABLED=true`（預設）— bridge 每 60s 讀 tmux 畫面偵測 `N% until auto-compact`，20% 警告 / 5% 自動 `/clear`
 - `ECLAW_REPLY_TIMEOUT_S=120`（預設）— 收訊 2 分鐘後 Claude 還在 busy 但沒 reply，自動注入提醒訊息：「不要用 Playwright 點 UI，請用 reply tool」
+- `ECLAW_FORWARD_KANBAN=true`（預設）— kanban 是 bot 的工作佇列，**不**應該過濾掉。此旗標僅保留作為緊急靜音：context overflow 復原過程中如果 bot 還沒穩定，可以暫時設 `false` 減緩湧入
 
-三者都在 bridge 內診斷並自動修正，不需要使用者介入。
+**設計原則**：Kanban 是 bot 的工作本身，不是噪音。修復方向是「幫 bot 處理好」，不是「把工作藏起來」。Context 監測 + reply enforcer 讓 bot 在瀕臨失效前自我修正，無須人工介入。
 
 **復原程序**（如未來重現）：
 ```bash
