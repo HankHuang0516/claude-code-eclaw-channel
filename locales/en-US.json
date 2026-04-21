@@ -27,5 +27,6 @@
   "context.warning": "⚠️ Context near capacity ({pct}% until auto-compact). Please finish current task ASAP — bridge will auto-/clear after. Avoid reading large files or starting Playwright sessions.",
   "context.auto_clear": "🧹 Context at {pct}% — bridge auto-executing /clear to free space.",
   "reply_enforcer.nudge": "⚠️ You haven't called reply tool for {minutes} minutes (user msg: \"{preview}\"). Please call reply tool **immediately** with a brief acknowledgment, then continue your task. Do NOT use Playwright to click EClaw UI buttons — reply tool is the correct channel reply mechanism.",
-  "auto_wake.nudge": "Process pending channel messages (use reply tool; do not use Playwright)"
+  "auto_wake.nudge": "You have a new channel message. **Immediately use the reply tool** to respond (even just a short ack like 'received'). Do NOT investigate, do NOT run Bash, do NOT use Playwright, do NOT query APIs — reply FIRST, then do anything else. This is mandatory.",
+  "auto_wake.nudge_with_msg": "You just received this channel message: \"{msg}\". **Immediately use the reply tool to respond** (even just 'received' is fine). Do NOT query the EClaw API for pending state (pending=0 does not mean no messages — the message was delivered via channel). Do NOT run Bash, Playwright, or any other tool — use reply tool FIRST, then do anything else. This is mandatory."
 }

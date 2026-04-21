@@ -27,5 +27,6 @@
   "context.warning": "⚠️ Context 即將滿了（剩 {pct}% 到 auto-compact）。請盡快完成當前任務，隨後 bridge 會自動 /clear 釋放空間。避免再讀大檔、避免啟動 Playwright session。",
   "context.auto_clear": "🧹 Context 剩 {pct}% — bridge 自動執行 /clear 釋放空間。",
   "reply_enforcer.nudge": "⚠️ 你已經 {minutes} 分鐘沒用 reply tool 回覆使用者訊息了（原文：\"{preview}\"）。請**立刻**呼叫 reply tool 送一段簡短確認，然後繼續任務。不要用 Playwright 點 EClaw UI 的按鈕 — reply tool 才是正確的回覆機制。",
-  "auto_wake.nudge": "處理 pending channel messages（使用 reply tool 回覆；不要用 Playwright）"
+  "auto_wake.nudge": "你收到一則新的 channel 訊息。**立即使用 reply tool 回覆**這則訊息（可以只是「收到」或簡短確認）。不要先調查、不要跑 Bash、不要用 Playwright、不要查 API — 回覆後再做任何其他事。這是強制要求。",
+  "auto_wake.nudge_with_msg": "你剛剛收到 channel 訊息：「{msg}」。**立即用 reply tool 回覆這則訊息**（即使只是「收到」都可以）。不要查 EClaw API 的 pending 狀態（pending=0 不代表沒訊息，訊息已經透過 channel 送到你這裡了）。不要跑 Bash、Playwright 或其他任何 tool — 先用 reply tool 送出回覆，之後才可以做其他事。這是強制要求。"
 }

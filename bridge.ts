@@ -88,6 +88,9 @@ let contextWarningLastSent = 0;
 // Auto-wake state
 let autoWakeTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAutoWakeSent = 0;
+// Track most recent channel message text so auto-wake nudge can tell
+// Claude WHICH message to reply to (not just "process pending")
+let lastPendingChannelMsg: string | null = null;
 
 interface PendingWatchdog {
   ask_id: string;
@@ -181,6 +184,7 @@ function connectWs() {
         // Claude replied — clear all watchdog state + reply enforcer + auto-wake
         clearAllWatchdogState();
         lastHumanMsgTimestamp = null;
+        lastPendingChannelMsg = null;
         if (autoWakeTimer) {
           clearTimeout(autoWakeTimer);
           autoWakeTimer = null;
@@ -304,18 +308,21 @@ async function diagnoseTmuxState(): Promise<string> {
       return "stuck_prompt";
     }
 
-    // Actively busy — thinking, tool-use, or streaming
-    if (
-      screen.includes("thinking") ||
-      screen.includes("tokens") ||
-      screen.includes("· ↑") ||
-      screen.includes("· ↓") ||
-      /\b(Channeling|Slithering|Sautéed|Infusing|Perusing|Coalescing|Evaporating|Wibbling|Pollinating|Shipping)\b/.test(screen)
-    ) {
+    // Claude Code shows "esc to interrupt" ONLY while a turn is
+    // actively running. When idle, the footer shows only
+    // "⏵⏵ bypass permissions on (shift+tab to cycle)" without any
+    // "esc to interrupt" text. This is the ONLY reliable way to
+    // distinguish active work from leftover screen text — keywords
+    // like "Sautéed for 39s" / "thinking" / "tokens" persist on
+    // screen even AFTER the turn finishes.
+    if (screen.includes("esc to interrupt")) {
       return "busy";
     }
 
-    // Idle — last line is the ❯ prompt with no activity indicator
+    // Past this point the footer doesn't have "esc to interrupt" →
+    // Claude is not actively running a turn. Now distinguish idle vs
+    // stuck on a confirmation (but the stuck_prompt check above
+    // already caught those).
     const lines = screen.trim().split("\n").filter(Boolean);
     const lastContentLine = lines[lines.length - 1] || "";
     if (lastContentLine.includes("❯") || lastContentLine.includes("bypass permissions")) {
@@ -353,17 +360,26 @@ function startWatchdog(text: string, from: string) {
  * an active session isn't spammed with wake prompts).
  */
 function scheduleAutoWake() {
-  if (!AUTO_WAKE_ENABLED) return;
+  if (!AUTO_WAKE_ENABLED) {
+    log(`Auto-wake scheduleAutoWake() called but DISABLED`);
+    return;
+  }
   // Debounce: cancel any pending auto-wake check
+  const wasDebounced = autoWakeTimer !== null;
   if (autoWakeTimer) clearTimeout(autoWakeTimer);
 
   const pollStart = Date.now();
+  log(`Auto-wake scheduled (delay ${AUTO_WAKE_DELAY_S}s${wasDebounced ? ", debounced previous" : ""})`);
   const tick = async () => {
     autoWakeTimer = null;
     const now = Date.now();
+    const pollAge = Math.round((now - pollStart) / 1000);
 
     // Cooldown check (from last successful nudge)
-    if (now - lastAutoWakeSent < AUTO_WAKE_COOLDOWN_S * 1000) return;
+    if (now - lastAutoWakeSent < AUTO_WAKE_COOLDOWN_S * 1000) {
+      log(`Auto-wake tick@${pollAge}s: cooldown active (last nudge ${Math.round((now - lastAutoWakeSent)/1000)}s ago < ${AUTO_WAKE_COOLDOWN_S}s)`);
+      return;
+    }
 
     // Give up after max wait — something is really stuck
     if (now - pollStart > AUTO_WAKE_MAX_WAIT_S * 1000) {
@@ -371,24 +387,31 @@ function scheduleAutoWake() {
       return;
     }
 
-    // Only nudge when Claude is TRULY idle. If it's busy (Claude is
-    // still processing the previous turn), reschedule another check
-    // in AUTO_WAKE_POLL_S seconds. This fixes the one-shot bug where
-    // a single check during busy→idle transition would see "busy"
-    // and give up forever.
     const state = await diagnoseTmuxState();
-    if (state !== "idle") {
-      // hook-pending, stuck_prompt, crashed → other handlers deal with it
-      // busy → poll again soon
-      if (state === "busy") {
-        autoWakeTimer = setTimeout(tick, AUTO_WAKE_POLL_S * 1000);
-      }
+    log(`Auto-wake tick@${pollAge}s: state=${state}`);
+    if (state === "stuck_prompt" || state === "hook_pending" || state === "crashed") {
+      // Other handlers deal with these states
+      log(`Auto-wake tick@${pollAge}s: bailing out (state=${state}, not retrying)`);
       return;
     }
+    if (state === "busy") {
+      // busy → poll again soon, wait for idle
+      autoWakeTimer = setTimeout(tick, AUTO_WAKE_POLL_S * 1000);
+      return;
+    }
+    // state === "idle" → proceed with nudge below
 
     try {
       const { execSync } = await import("node:child_process");
-      const nudge = t("auto_wake.nudge");
+      // Include the actual pending message content in the nudge so Claude
+      // knows WHICH message to reply to. Without this, Claude queries
+      // EClaw API, sees pending=0 (because messages were delivered via
+      // channel), and concludes there's nothing to reply to.
+      const pendingMsg = lastPendingChannelMsg || watchdogFirstMsg?.text || "";
+      const msgPreview = pendingMsg.split("\n")[0].slice(0, 200);
+      const nudge = msgPreview
+        ? t("auto_wake.nudge_with_msg", { msg: msgPreview })
+        : t("auto_wake.nudge");
 
       // Guard against stuck input buffer: if a previous nudge's Enter
       // didn't submit (happens during Claude state transitions), the
@@ -904,7 +927,10 @@ Bun.serve({
 
         // Auto-wake: after forwarding, check if Claude is idle and
         // needs a nudge. MCP notifications alone don't trigger turns.
-        if (forwardOk) scheduleAutoWake();
+        if (forwardOk) {
+          lastPendingChannelMsg = fullText;
+          scheduleAutoWake();
+        }
 
         // ── Watchdog: only trigger when a NEW human message arrives while
         // a PREVIOUS human message is still unacknowledged (no Claude reply
@@ -990,11 +1016,18 @@ async function checkContextPressure() {
 }
 
 // ── Reply-tool enforcer (2026-04-21 incident fix) ──
-// When a human message was received >REPLY_TIMEOUT_S ago and Claude is
-// still "busy" (not idle, not stuck, not hook-pending) AND no reply has
-// come through fakechat WebSocket, inject a reminder. This catches the
-// case where Claude is running tools (Bash, Playwright) but forgot to
-// call the reply tool.
+// When a human message was received >REPLY_TIMEOUT_S ago and no reply
+// has come through fakechat WebSocket, inject a reminder. Works for
+// BOTH states:
+//   - busy: Claude is running tools (Bash, Playwright) but forgot
+//     reply tool → reminder injected into inbox, will be seen in
+//     next turn boundary.
+//   - idle: Claude finished its turn with only terminal output, never
+//     called reply tool → reminder + scheduleAutoWake() triggers a new
+//     turn so Claude reads the inbox and retries.
+//
+// Previously gated to "busy" only, which missed the exact failure mode
+// we wanted to catch (Claude went idle WITHOUT using reply tool).
 async function checkReplyEnforcer() {
   if (!lastHumanMsgTimestamp) return;
   const ageMs = Date.now() - lastHumanMsgTimestamp;
@@ -1004,14 +1037,21 @@ async function checkReplyEnforcer() {
   if (Date.now() - lastReplyEnforcerSent < 3 * 60_000) return;
 
   const state = await diagnoseTmuxState();
-  if (state !== "busy") return; // idle/stuck/crashed handled by watchdog
+  // stuck_prompt / hook_pending / crashed → other handlers deal with
+  // them; don't stack another reminder on top.
+  if (state === "stuck_prompt" || state === "hook_pending" || state === "crashed") return;
 
   const preview = (watchdogFirstMsg?.text || "").slice(0, 80).replace(/\n/g, " ");
   const minutes = Math.round(ageMs / 60_000);
-  log(`Reply enforcer: Claude busy ${minutes}m without reply → nudging`);
+  log(`Reply enforcer: Claude ${state} ${minutes}m without reply → nudging (state=${state})`);
   await notifyClaudeError(
     t("reply_enforcer.nudge", { minutes: String(minutes), preview })
   );
+  // If Claude is idle, the reminder alone just sits in the MCP inbox
+  // and won't be seen. Schedule auto-wake so a turn is triggered.
+  if (state === "idle") {
+    scheduleAutoWake();
+  }
   lastReplyEnforcerSent = Date.now();
 }
 
