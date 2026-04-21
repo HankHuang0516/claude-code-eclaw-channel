@@ -210,3 +210,88 @@ bridge-auth-selftest e2e
 - `feedback_never_dash_p.md` — 禁用 `-p` 的原因
 - `feedback_computer_mcp_dedicated_unit.md` — 專用 U## (e.g. U99) 駐守 computer MCP
 - `feedback_sub_claude_mcp_access.md` — sub-Claude 無法自行授權（被 bridge-auth SUPERSEDED）
+- `reference_dispatch_template.md` — 下方 Dispatch Preamble 的記憶索引
+
+### Dispatch Preamble Template（強制 — 每次派 U## 都要貼）
+
+目的：把「橋接授權 + E2E 驗證 + 文檔回寫 + Acceptance report」做成 muscle memory，每個 sub-worker 提示詞的開頭都必須先貼下列區塊，再接真正的任務描述。
+
+```
+【橋接授權 + E2E 協定（強制）】
+你是從 commander (#2) 被 `unit.py dispatch` 派出來的 U## 互動式 claude（不是 `claude -p`）。
+
+1. 任何需要 MCP 工具授權的彈窗（computer MCP request_access / playwright 等）→ **不自己猜**。讓彈窗出現後停住，commander 會用 `bridge-auth` 按鍵授權（keycodes 124/125/36/36）。
+2. E2E 驗證必須實際跑一次，三選一：
+   - UI 類：computer MCP 或 playwright 跑實際 user flow，交 screenshot
+   - API 類：curl smoke 貼請求+回應
+   - 資料庫/schema 類：SELECT 驗證 + 回應樣本
+3. 發現新 MCP 工具的授權按鍵序列 → 回寫 `TOOLS.md §橋接授權` operations table + `feedback_mcp_access_via_bridge.md`
+4. Acceptance report 必含：U## ID、keystroke sequence（或 "no elicitation triggered"）、E2E 驗證結果、`unit.py read --tail N` 證據、PR URL（若有）、kanban card ID（若有）
+
+【限制】
+- 永遠不用 `claude -p`
+- 閉環自跑，不問 Hank（blockers 才回報）
+- 完成後列印 summary 等下次 wakeup
+```
+
+使用流程：
+```bash
+# commander（主通道）要派新任務時：
+cat /path/to/TOOLS.md  # 或 memory/reference_dispatch_template.md
+# → 複製 preamble block → 貼到 sub-worker 提示詞最前面 → 加上真正任務
+unit.py dispatch U22 "<preamble>\n\n<真正任務>"
+```
+
+特例：純後端 API / schema 任務 U## 不需 computer MCP elicitation，preamble 仍然要貼（第 1 點會自然 "no elicitation triggered"），但必貼的是第 2/3/4 點。
+
+## Claude Design / 視覺素材 SOP（2026-04-22 首次 pilot 完成，PR #1947）
+
+**產品定位**：claude.ai 上的 Opus 4.7（launched 2026-04-17），整合在一般 chat，不是獨立 URL。輸入 visual design 類 prompt 時，會自動啟動 `frontend-design` skill 跑 agentic pipeline（SVG → cairosvg → PNG）。
+
+**入口確認** (from pilot)：
+- `claude.ai/design` → SPA redirect 回 `/new`（沒有獨立 URL）
+- 左側 rail 沒有「Design」按鈕；quick actions 只有 Write/Learn/Code/Life stuff/Claude's choice
+- 實際觸發：**直接在 /new 的 chat 輸入框貼 visual prompt**；Opus 4.7 自己判斷要用 frontend-design skill
+- Entitlement 驗證：`claude.ai/settings/usage` 可看 plan + Design 用量
+
+**標準流程**（每次要生視覺稿就跑）：
+```
+1. commander 決定素材（尺寸 / headline / 賣點 / 品牌色 / wordmark / tagline）
+2. unit.py spawn → claude 互動式 → bridge-auth 4-key 授權 computer MCP
+3. U## 開 Chrome → claude.ai/new → 登入確認（eye-check 或 U## 回報）
+4. U## 貼 prompt → key Return
+5. commander eye-supervise 等 Design artifact 產出（通常 1-3 分鐘，含 skill loading + SVG + PNG render）
+6. U## 點 artifact 控制列 ↓ Download → PNG 存到 ~/Downloads/
+7. commander Read PNG 驗收 → mv 到 ~/Downloads/claude-design/<card-id>/<name>.png
+8. commander commit 到 repo（marketing asset）或直接 upload（社群平台）
+```
+
+**Prompt template（vector-search hero 範例，pilot 驗證可用）**：
+```
+Create a 1200×630 social share hero image for <feature name>.
+
+Theme: three selling points stacked vertically:
+1. <point 1>
+2. <point 2>
+3. <point 3>
+
+Style: clean modern tech, soft gradient background in <brand color>, white text,
+iconography for each point (<icon hints>), with tagline '<tagline>' and a small
+'<brand wordmark>' in bottom-right corner. 1200x630 aspect ratio for
+Twitter/LinkedIn/Facebook OG image.
+```
+
+**pilot 實戰結果** (PR #1947, 2026-04-22 03:49)：
+- `backend/public/assets/marketing/vector-hero-v1.png` — 357 KB, 1200×630 RGB
+- Claude 寫的副文案（例：「Semantic search surfaces the right memory, instantly.」）品質明顯高於 hand-rolled
+- 從 commander 下指令到 PR merged 約 40 分鐘（含 U25 spawn + 授權 + prompt debugging）
+- bridge-auth 4-key 序列 124/125/36/36 一次過；無 IME 干擾
+
+**常見坑**：
+- U## 會嘗試去 /settings/account 找 email 做 "完整回報" — 實際上 commander 只需 login confirm 不需 email；在 prompt 裡明講「跳過 account 驗證」
+- 中途可能有 macOS app 資料存取 TCC popup — 不是 claude.ai 的事，放著不理或 Escape
+- Design artifact preview 右上角有 Close 按鈕，點下去 artifact 就找不到了 — prompt 裡警告 U## 先 Download 再做任何事
+
+**相關**：
+- `feedback_claude_design_visual.md` — DEFAULT 規則（視覺稿走 Claude Design，不手刻 SVG）
+- `feedback_publish_autonomy.md` — 促銷內容自行發，不問 Hank
