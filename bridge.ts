@@ -63,10 +63,28 @@ const CONTEXT_WATCH_ENABLED = (process.env.ECLAW_CONTEXT_WATCH_ENABLED || "true"
 // message and still hasn't called reply tool, inject a reminder.
 const REPLY_TIMEOUT_S = parseInt(process.env.ECLAW_REPLY_TIMEOUT_S || "120", 10);
 
+// ── Auto-wake (2026-04-21 session-idle fix) ──
+// Claude Code is a "reactive" agent — every turn must be triggered by
+// user input. MCP channel notifications only populate the inbox; they
+// do NOT spawn a turn on their own. After `/clear` or for fresh
+// sessions, forwarded messages sit idle.
+//
+// Solution: after forwarding a message to fakechat, wait N seconds.
+// If eclaw-bot is still idle (no active turn), `tmux send-keys` a
+// nudge prompt that triggers a turn, which causes Claude to pick up
+// the inbox channel event on its own.
+const AUTO_WAKE_ENABLED = (process.env.ECLAW_AUTO_WAKE_ENABLED || "true") !== "false";
+const AUTO_WAKE_DELAY_S = parseInt(process.env.ECLAW_AUTO_WAKE_DELAY_S || "10", 10);
+const AUTO_WAKE_COOLDOWN_S = parseInt(process.env.ECLAW_AUTO_WAKE_COOLDOWN_S || "60", 10);
+
 // Last human message timestamp for reply enforcer
 let lastHumanMsgTimestamp: number | null = null;
 let lastReplyEnforcerSent = 0;
 let contextWarningLastSent = 0;
+
+// Auto-wake state
+let autoWakeTimer: ReturnType<typeof setTimeout> | null = null;
+let lastAutoWakeSent = 0;
 
 interface PendingWatchdog {
   ask_id: string;
@@ -157,9 +175,13 @@ function connectWs() {
           log(`Reply skipped (dup id=${msgId})`);
           return;
         }
-        // Claude replied — clear all watchdog state + reply enforcer
+        // Claude replied — clear all watchdog state + reply enforcer + auto-wake
         clearAllWatchdogState();
         lastHumanMsgTimestamp = null;
+        if (autoWakeTimer) {
+          clearTimeout(autoWakeTimer);
+          autoWakeTimer = null;
+        }
         forwardReplyToEClaw(data.text).catch(async (err) => {
           log(`Reply forward error: ${err.message}`);
           // Feed error back to Claude so it can self-diagnose and retry
@@ -314,6 +336,48 @@ async function diagnoseTmuxState(): Promise<string> {
 function startWatchdog(text: string, from: string) {
   watchdogFirstMsg = { text, from, timestamp: Date.now() };
   startWatchdogTimer();
+}
+
+/**
+ * Auto-wake: after forwarding a message to fakechat, schedule a delayed
+ * check. If Claude Code is still idle after AUTO_WAKE_DELAY_S seconds,
+ * inject a short nudge via `tmux send-keys` to trigger a new turn. The
+ * turn itself will cause Claude to pick up the pending channel event
+ * from its MCP inbox.
+ *
+ * Debounced: each new forwarded message resets the timer. Cooldown:
+ * once woken, won't nudge again for AUTO_WAKE_COOLDOWN_S seconds (so
+ * an active session isn't spammed with wake prompts).
+ */
+function scheduleAutoWake() {
+  if (!AUTO_WAKE_ENABLED) return;
+  // Debounce: cancel any pending auto-wake check
+  if (autoWakeTimer) clearTimeout(autoWakeTimer);
+
+  autoWakeTimer = setTimeout(async () => {
+    autoWakeTimer = null;
+    // Cooldown check
+    const now = Date.now();
+    if (now - lastAutoWakeSent < AUTO_WAKE_COOLDOWN_S * 1000) return;
+
+    // Only nudge when Claude is truly idle — if it's busy / stuck /
+    // hook-pending, the respective watchdog/enforcer handles it.
+    const state = await diagnoseTmuxState();
+    if (state !== "idle") return;
+
+    try {
+      const { execSync } = await import("node:child_process");
+      const nudge = t("auto_wake.nudge");
+      // tmux send-keys: type the nudge then press Enter to submit
+      execSync(`tmux send-keys -t eclaw-bot ${JSON.stringify(nudge)} Enter`, {
+        timeout: 3000,
+      });
+      lastAutoWakeSent = now;
+      log(`Auto-wake nudge sent (eclaw-bot was idle)`);
+    } catch (err: any) {
+      log(`Auto-wake nudge failed: ${err.message}`);
+    }
+  }, AUTO_WAKE_DELAY_S * 1000);
 }
 
 function startWatchdogTimer() {
@@ -490,6 +554,10 @@ Bun.serve({
         contextWatchEnabled: CONTEXT_WATCH_ENABLED,
         replyTimeoutSeconds: REPLY_TIMEOUT_S,
         lastHumanMsgAge: lastHumanMsgTimestamp ? Math.round((Date.now() - lastHumanMsgTimestamp) / 1000) : null,
+        // 2026-04-21 session-idle fix
+        autoWakeEnabled: AUTO_WAKE_ENABLED,
+        autoWakeDelaySeconds: AUTO_WAKE_DELAY_S,
+        autoWakeTimerActive: autoWakeTimer !== null,
       });
     }
 
@@ -768,6 +836,7 @@ Bun.serve({
         const form = new FormData();
         form.set("id", id);
         form.set("text", fullText);
+        let forwardOk = false;
         try {
           const resp = await fetch("http://localhost:8787/upload", {
             method: "POST",
@@ -775,12 +844,17 @@ Bun.serve({
           });
           if (resp.ok) {
             log("Forwarded to fakechat via /upload (MCP notification triggered)");
+            forwardOk = true;
           } else {
             log(`Fakechat /upload failed (${resp.status})`);
           }
         } catch (err: any) {
           log(`Fakechat /upload error: ${err.message}`);
         }
+
+        // Auto-wake: after forwarding, check if Claude is idle and
+        // needs a nudge. MCP notifications alone don't trigger turns.
+        if (forwardOk) scheduleAutoWake();
 
         // ── Watchdog: only trigger when a NEW human message arrives while
         // a PREVIOUS human message is still unacknowledged (no Claude reply

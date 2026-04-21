@@ -157,6 +157,9 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_FORWARD_KANBAN` | | 轉發 kanban 工作佇列訊息（設 `false` 為緊急靜音用） | `true` |
 | `ECLAW_CONTEXT_WATCH_ENABLED` | | Context 壓力監控（20% 警告 / 5% auto-clear） | `true` |
 | `ECLAW_REPLY_TIMEOUT_S` | | Claude 收訊後未用 reply tool 的提醒秒數 | `120` |
+| `ECLAW_AUTO_WAKE_ENABLED` | | idle session 自動喚醒（`/clear` 後或新 session 必備） | `true` |
+| `ECLAW_AUTO_WAKE_DELAY_S` | | 轉發後多少秒檢查 idle 並喚醒 | `10` |
+| `ECLAW_AUTO_WAKE_COOLDOWN_S` | | 連續喚醒的冷卻時間 | `60` |
 
 ## 啟動方式
 
@@ -547,6 +550,34 @@ tmux send-keys -t eclaw-bot 'claude --dangerously-skip-permissions --channels pl
 - `ECLAW_FORWARD_KANBAN=true`（預設）— kanban 是 bot 的工作佇列，**不**應該過濾掉。此旗標僅保留作為緊急靜音：context overflow 復原過程中如果 bot 還沒穩定，可以暫時設 `false` 減緩湧入
 
 **設計原則**：Kanban 是 bot 的工作本身，不是噪音。修復方向是「幫 bot 處理好」，不是「把工作藏起來」。Context 監測 + reply enforcer 讓 bot 在瀕臨失效前自我修正，無須人工介入。
+
+### 2026-04-21 Idle Session 自動喚醒
+
+**現象**：每次 `/clear` 之後，eclaw-bot 成為全新 session，之後的 channel 訊息進 inbox 但 Claude **不會自己啟動 turn 去處理**。必須使用者在 tmux 裡敲一句話才能喚醒。
+
+**根因**：Claude Code 是「回應式」agent — 每個 turn 必須由 user input 觸發。MCP 的 `notifications/claude/channel` 只會填充 inbox 和 Recent activity，**沒有** API 讓 plugin 主動建立 turn。這是 Claude Code 架構限制，不是 plugin 能解的。
+
+**為什麼不 fork fakechat**：
+- MCP 協定根本不提供「plugin 指揮 agent 建立 turn」的機制
+- 即使 fork 也得每次 Claude Code 更新都重維護
+- 不是一勞永逸的方案
+
+**真正一勞永逸的解法**：在 bridge 側自動喚醒。
+
+| 行為 | 設定 |
+|------|------|
+| 轉發訊息到 fakechat 後，延遲檢查 tmux 畫面 | `ECLAW_AUTO_WAKE_DELAY_S=10`（10 秒） |
+| 若 `diagnoseTmuxState()` 回傳 `idle`，用 `tmux send-keys` 注入「處理 pending channel messages」觸發 turn | 自動 |
+| 避免 spam：冷卻時間 | `ECLAW_AUTO_WAKE_COOLDOWN_S=60`（60 秒） |
+| 停用（如果 Claude Code 未來原生支援了） | `ECLAW_AUTO_WAKE_ENABLED=false` |
+
+**這個做法的好處**：
+- 全在 bridge 層完成，**不碰 Claude Code / fakechat 任何東西**
+- 不受上游更新影響
+- `/clear` 後、新 session 都自動生效
+- 跟 watchdog / reply enforcer 一致的診斷型架構（先 `diagnoseTmuxState` 才決定動作）
+
+`/health` 新增診斷欄位 `autoWakeEnabled`、`autoWakeDelaySeconds`、`autoWakeTimerActive` 方便 debug。
 
 **復原程序**（如未來重現）：
 ```bash
