@@ -158,7 +158,9 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_CONTEXT_WATCH_ENABLED` | | Context 壓力監控（20% 警告 / 5% auto-clear） | `true` |
 | `ECLAW_REPLY_TIMEOUT_S` | | Claude 收訊後未用 reply tool 的提醒秒數 | `120` |
 | `ECLAW_AUTO_WAKE_ENABLED` | | idle session 自動喚醒（`/clear` 後或新 session 必備） | `true` |
-| `ECLAW_AUTO_WAKE_DELAY_S` | | 轉發後多少秒檢查 idle 並喚醒 | `10` |
+| `ECLAW_AUTO_WAKE_DELAY_S` | | 轉發後第一次檢查的延遲秒數 | `10` |
+| `ECLAW_AUTO_WAKE_POLL_S` | | 若 Claude 還 busy，每 N 秒重新檢查 idle | `5` |
+| `ECLAW_AUTO_WAKE_MAX_WAIT_S` | | 總共最多等多久才放棄 | `300` |
 | `ECLAW_AUTO_WAKE_COOLDOWN_S` | | 連續喚醒的冷卻時間 | `60` |
 
 ## 啟動方式

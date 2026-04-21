@@ -69,12 +69,15 @@ const REPLY_TIMEOUT_S = parseInt(process.env.ECLAW_REPLY_TIMEOUT_S || "120", 10)
 // do NOT spawn a turn on their own. After `/clear` or for fresh
 // sessions, forwarded messages sit idle.
 //
-// Solution: after forwarding a message to fakechat, wait N seconds.
-// If eclaw-bot is still idle (no active turn), `tmux send-keys` a
-// nudge prompt that triggers a turn, which causes Claude to pick up
-// the inbox channel event on its own.
+// Solution: after forwarding a message to fakechat, POLL every
+// AUTO_WAKE_POLL_S until Claude becomes truly idle (up to AUTO_WAKE_
+// MAX_WAIT_S), then `tmux send-keys` a nudge prompt to trigger a turn.
+// Polling fixes the previous one-shot bug where the single check fired
+// during a busy→idle transition, saw "busy", and never retried.
 const AUTO_WAKE_ENABLED = (process.env.ECLAW_AUTO_WAKE_ENABLED || "true") !== "false";
 const AUTO_WAKE_DELAY_S = parseInt(process.env.ECLAW_AUTO_WAKE_DELAY_S || "10", 10);
+const AUTO_WAKE_POLL_S = parseInt(process.env.ECLAW_AUTO_WAKE_POLL_S || "5", 10);
+const AUTO_WAKE_MAX_WAIT_S = parseInt(process.env.ECLAW_AUTO_WAKE_MAX_WAIT_S || "300", 10);
 const AUTO_WAKE_COOLDOWN_S = parseInt(process.env.ECLAW_AUTO_WAKE_COOLDOWN_S || "60", 10);
 
 // Last human message timestamp for reply enforcer
@@ -354,16 +357,34 @@ function scheduleAutoWake() {
   // Debounce: cancel any pending auto-wake check
   if (autoWakeTimer) clearTimeout(autoWakeTimer);
 
-  autoWakeTimer = setTimeout(async () => {
+  const pollStart = Date.now();
+  const tick = async () => {
     autoWakeTimer = null;
-    // Cooldown check
     const now = Date.now();
+
+    // Cooldown check (from last successful nudge)
     if (now - lastAutoWakeSent < AUTO_WAKE_COOLDOWN_S * 1000) return;
 
-    // Only nudge when Claude is truly idle — if it's busy / stuck /
-    // hook-pending, the respective watchdog/enforcer handles it.
+    // Give up after max wait — something is really stuck
+    if (now - pollStart > AUTO_WAKE_MAX_WAIT_S * 1000) {
+      log(`Auto-wake gave up after ${AUTO_WAKE_MAX_WAIT_S}s polling (eclaw-bot never became idle)`);
+      return;
+    }
+
+    // Only nudge when Claude is TRULY idle. If it's busy (Claude is
+    // still processing the previous turn), reschedule another check
+    // in AUTO_WAKE_POLL_S seconds. This fixes the one-shot bug where
+    // a single check during busy→idle transition would see "busy"
+    // and give up forever.
     const state = await diagnoseTmuxState();
-    if (state !== "idle") return;
+    if (state !== "idle") {
+      // hook-pending, stuck_prompt, crashed → other handlers deal with it
+      // busy → poll again soon
+      if (state === "busy") {
+        autoWakeTimer = setTimeout(tick, AUTO_WAKE_POLL_S * 1000);
+      }
+      return;
+    }
 
     try {
       const { execSync } = await import("node:child_process");
@@ -395,11 +416,16 @@ function scheduleAutoWake() {
       await new Promise((r) => setTimeout(r, 400));
       execSync("tmux send-keys -t eclaw-bot Enter", { timeout: 2000 });
       lastAutoWakeSent = now;
-      log(`Auto-wake nudge sent (eclaw-bot was idle)`);
+      log(`Auto-wake nudge sent (eclaw-bot was idle, polled ${Math.round((now - pollStart) / 1000)}s)`);
     } catch (err: any) {
       log(`Auto-wake nudge failed: ${err.message}`);
     }
-  }, AUTO_WAKE_DELAY_S * 1000);
+  };
+
+  // First check after AUTO_WAKE_DELAY_S (e.g. 10s) to give Claude a
+  // chance to respond naturally. Subsequent re-polls happen inside
+  // tick() via AUTO_WAKE_POLL_S intervals.
+  autoWakeTimer = setTimeout(tick, AUTO_WAKE_DELAY_S * 1000);
 }
 
 function startWatchdogTimer() {
@@ -579,6 +605,8 @@ Bun.serve({
         // 2026-04-21 session-idle fix
         autoWakeEnabled: AUTO_WAKE_ENABLED,
         autoWakeDelaySeconds: AUTO_WAKE_DELAY_S,
+        autoWakePollSeconds: AUTO_WAKE_POLL_S,
+        autoWakeMaxWaitSeconds: AUTO_WAKE_MAX_WAIT_S,
         autoWakeTimerActive: autoWakeTimer !== null,
       });
     }
