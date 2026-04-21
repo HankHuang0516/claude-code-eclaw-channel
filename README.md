@@ -154,6 +154,9 @@ cp .mcp.json.example .mcp.json
 | `FAKECHAT_WS` | | Fakechat WebSocket URL（bridge 模式用） | `ws://localhost:8787/ws` |
 | `ECLAW_WATCHDOG_TIMEOUT` | | Watchdog 超時秒數 | `30` |
 | `ECLAW_WATCHDOG_ENABLED` | | 是否啟用看門狗機制 | `true` |
+| `ECLAW_FORWARD_KANBAN` | | 是否轉發 kanban 自動訊息（預設過濾） | `false` |
+| `ECLAW_CONTEXT_WATCH_ENABLED` | | Context 壓力監控（20% 警告 / 5% auto-clear） | `true` |
+| `ECLAW_REPLY_TIMEOUT_S` | | Claude 收訊後未用 reply tool 的提醒秒數 | `120` |
 
 ## 啟動方式
 
@@ -526,6 +529,49 @@ tmux send-keys -t eclaw-bot 'claude --dangerously-skip-permissions --channels pl
 2. 確認 webhook 可達：`curl http://localhost:18800/health`
 3. 確認 WebSocket 已連線：health 回應中 `wsConnected` 應為 `true`
 4. 如果都正常但 Claude Code 沒反應，在 tmux 裡手動輸入一句話激活 session
+
+## 已知問題與修復紀錄
+
+### 2026-04-21 Context Overflow + Kanban Flood + Playwright 旁路事件
+
+**現象**：eclaw-bot Claude Code channel 連續 13 小時未回覆，期間累積 140 筆 pending webhook 訊息（104 筆是 kanban 自動觸發）。eclaw-bot session 吃到 111.9k / 200k tokens，Claude 放棄 `reply` tool，改用 Playwright 開瀏覽器點 EClaw web UI 的 ↩ 按鈕，導致回覆完全沒進到正常流程。
+
+**根因（三層疊加）**：
+1. **Kanban 噪音污染** — kanban 每 15–30 分鐘自動觸發一張卡進 Claude context，沒人主動要求回覆
+2. **Context 壓力無監測** — 近滿時 Claude 行為變異（放棄 MCP tool、改跑瀏覽器自動化）
+3. **Reply tool 強制失效** — `patch-fakechat.sh` 的 instructions 在 context 壓力下被 Claude「忽略」
+
+**修復**（本次提交）：
+- `ECLAW_FORWARD_KANBAN=false`（預設）— bridge 直接丟棄 `from=kanban` 訊息，不進 fakechat
+- `ECLAW_CONTEXT_WATCH_ENABLED=true`（預設）— bridge 每 60s 讀 tmux 畫面偵測 `N% until auto-compact`，20% 警告 / 5% 自動 `/clear`
+- `ECLAW_REPLY_TIMEOUT_S=120`（預設）— 收訊 2 分鐘後 Claude 還在 busy 但沒 reply，自動注入提醒訊息：「不要用 Playwright 點 UI，請用 reply tool」
+
+三者都在 bridge 內診斷並自動修正，不需要使用者介入。
+
+**復原程序**（如未來重現）：
+```bash
+# 1. 立即釋放 context
+tmux send-keys -t eclaw-bot Escape
+tmux send-keys -t eclaw-bot '/clear' Enter
+
+# 2. 檢查 bridge log 找 root cause
+tail -200 /tmp/eclaw-bridge.log | grep -E "kanban|Forwarding reply|Reply forward"
+
+# 3. 確認沒有遺留 Playwright session
+ps aux | grep -i "playwright\|chromium" | grep -v grep
+
+# 4. 如果有 Playwright 卡在 headless session，kill 掉再重啟 bridge
+pkill -f "playwright"
+tmux kill-session -t eclaw-bridge
+tmux new-session -d -s eclaw-bridge
+tmux send-keys -t eclaw-bridge 'cd $REPO && bun bridge.ts' Enter
+```
+
+**驗證新配置已生效**：
+```bash
+curl -s http://localhost:18800/health | jq
+# 應看到：forwardKanban=false, contextWatchEnabled=true, replyTimeoutSeconds=120
+```
 
 ## License
 

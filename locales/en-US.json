@@ -23,5 +23,8 @@
   "watchdog.diag_crashed": "🔄 Claude Code session appears unresponsive, may need to restart eclaw-bot tmux session",
   "watchdog.diag_busy": "⏳ Claude is working on a task, your second message is queued",
   "error.reply_failed": "⚠️ EClaw reply failed ({error}). Check if bridge needs restart (re-register + bind to get fresh botSecret). Run: curl -s http://localhost:18800/health to verify bridge state.",
-  "error.no_device": "⚠️ Cannot reply: missing deviceId/entityId. Bridge may not have completed EClaw registration. Wait or restart bridge."
+  "error.no_device": "⚠️ Cannot reply: missing deviceId/entityId. Bridge may not have completed EClaw registration. Wait or restart bridge.",
+  "context.warning": "⚠️ Context near capacity ({pct}% until auto-compact). Please finish current task ASAP — bridge will auto-/clear after. Avoid reading large files or starting Playwright sessions.",
+  "context.auto_clear": "🧹 Context at {pct}% — bridge auto-executing /clear to free space.",
+  "reply_enforcer.nudge": "⚠️ You haven't called reply tool for {minutes} minutes (user msg: \"{preview}\"). Please call reply tool **immediately** with a brief acknowledgment, then continue your task. Do NOT use Playwright to click EClaw UI buttons — reply tool is the correct channel reply mechanism."
 }

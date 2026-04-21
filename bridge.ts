@@ -42,6 +42,27 @@ const pendingAsks: Map<string, PendingAsk> = new Map();
 const WATCHDOG_TIMEOUT_S = parseInt(process.env.ECLAW_WATCHDOG_TIMEOUT || "30", 10);
 const WATCHDOG_ENABLED = (process.env.ECLAW_WATCHDOG_ENABLED || "true") !== "false";
 
+// ── Kanban filter (2026-04-21 incident fix) ──
+// Kanban automation messages (status changes, task reminders, scheduled
+// triggers) are NOT user questions. When flooded (100+/day), they fill
+// Claude's context with noise. Default: drop at bridge.
+const FORWARD_KANBAN = (process.env.ECLAW_FORWARD_KANBAN || "false") === "true";
+
+// ── Context pressure monitor (2026-04-21 incident fix) ──
+// eclaw-bot can silently hit 111k/200k context. Auto-warn at 20%, auto
+// /clear at 5% remaining until auto-compact.
+const CONTEXT_WATCH_ENABLED = (process.env.ECLAW_CONTEXT_WATCH_ENABLED || "true") !== "false";
+
+// ── Reply-tool enforcer (2026-04-21 incident fix) ──
+// If Claude is busy (thinking/tools) for longer than this after a human
+// message and still hasn't called reply tool, inject a reminder.
+const REPLY_TIMEOUT_S = parseInt(process.env.ECLAW_REPLY_TIMEOUT_S || "120", 10);
+
+// Last human message timestamp for reply enforcer
+let lastHumanMsgTimestamp: number | null = null;
+let lastReplyEnforcerSent = 0;
+let contextWarningLastSent = 0;
+
 interface PendingWatchdog {
   ask_id: string;
   timestamp: number;
@@ -131,8 +152,9 @@ function connectWs() {
           log(`Reply skipped (dup id=${msgId})`);
           return;
         }
-        // Claude replied — clear all watchdog state
+        // Claude replied — clear all watchdog state + reply enforcer
         clearAllWatchdogState();
+        lastHumanMsgTimestamp = null;
         forwardReplyToEClaw(data.text).catch(async (err) => {
           log(`Reply forward error: ${err.message}`);
           // Feed error back to Claude so it can self-diagnose and retry
@@ -458,6 +480,11 @@ Bun.serve({
         watchdogTimeoutSeconds: WATCHDOG_TIMEOUT_S,
         watchdogTimerActive: watchdogTimer !== null,
         pendingWatchdogs: pendingWatchdogs.size,
+        // 2026-04-21 incident fixes
+        forwardKanban: FORWARD_KANBAN,
+        contextWatchEnabled: CONTEXT_WATCH_ENABLED,
+        replyTimeoutSeconds: REPLY_TIMEOUT_S,
+        lastHumanMsgAge: lastHumanMsgTimestamp ? Math.round((Date.now() - lastHumanMsgTimestamp) / 1000) : null,
       });
     }
 
@@ -719,6 +746,16 @@ Bun.serve({
         // Prepend sender info
         const fullText = `[EClaw from ${from}] ${displayText}`;
 
+        // ── Kanban filter (2026-04-21 incident fix) ──
+        // Kanban automation (status changes, reminders, scheduled task
+        // triggers) should NOT pollute Claude's context. They are not
+        // user questions — they are automation noise. Drop at bridge
+        // unless explicitly opted-in via ECLAW_FORWARD_KANBAN=true.
+        if (from === "kanban" && !FORWARD_KANBAN) {
+          log(`Kanban message filtered (${fullText.length} chars): "${fullText.slice(0, 200).replace(/\n/g, "\\n")}…" — set ECLAW_FORWARD_KANBAN=true to forward`);
+          return Response.json({ ok: true, filtered: "kanban" });
+        }
+
         log(`Webhook received (${fullText.length} chars): "${fullText.slice(0, 500).replace(/\n/g, "\\n")}${fullText.length > 500 ? "…" : ""}" → forwarding to fakechat`);
 
         // Send to fakechat via HTTP POST /upload (triggers MCP notification)
@@ -745,9 +782,13 @@ Bun.serve({
         // a PREVIOUS human message is still unacknowledged (no Claude reply
         // since the first message). The first message is normal — Claude
         // needs time to process. The watchdog fires when the SECOND message
-        // piles up, meaning the user is waiting and Claude is still busy. ──
+        // piles up, meaning the user is waiting and Claude is still busy.
+        // Kanban/entity:0 auto-messages are EXCLUDED even if forwarded,
+        // because they don't represent a waiting user (2026-04-21 fix). ──
         const isHumanMessage = from === "web_chat" || from === "client" || from === "user";
         if (isHumanMessage) {
+          // Reply-tool enforcer: track timestamp of latest human message
+          lastHumanMsgTimestamp = Date.now();
           if (!watchdogFirstMsg) {
             // First human message — just track it, no watchdog yet.
             watchdogFirstMsg = { text: userText, from, timestamp: Date.now() };
@@ -775,5 +816,81 @@ connectWs();
 
 // Register with EClaw platform
 registerWithEClaw().catch((err) => log(`Registration error: ${err.message}`));
+
+// ── Context pressure monitor (2026-04-21 incident fix) ──
+// Reads tmux screen every 60s, looks for "N% until auto-compact" marker.
+// - ≤5%  → auto /clear (critical)
+// - ≤20% → warn Claude once per 10 min
+async function checkContextPressure() {
+  if (!CONTEXT_WATCH_ENABLED) return;
+  try {
+    const { execSync } = await import("node:child_process");
+    const screen = execSync("tmux capture-pane -t eclaw-bot -p 2>&1", {
+      timeout: 5000,
+      encoding: "utf-8",
+    });
+    const match = screen.match(/(\d+)%\s*until auto-compact/);
+    if (!match) return;
+    const pct = parseInt(match[1], 10);
+    const nowMs = Date.now();
+
+    if (pct <= 5) {
+      // Critical — auto /clear if we haven't in last 5 minutes
+      if (nowMs - contextWarningLastSent < 5 * 60_000) return;
+      log(`Context pressure CRITICAL: ${pct}% until auto-compact → auto /clear`);
+      try {
+        execSync("tmux send-keys -t eclaw-bot Escape", { timeout: 3000 });
+        execSync("sleep 1 && tmux send-keys -t eclaw-bot '/clear' Enter", {
+          timeout: 5000,
+          shell: "/bin/bash",
+        });
+        await notifyClaudeError(t("context.auto_clear", { pct: String(pct) }));
+      } catch (err: any) {
+        log(`Auto /clear failed: ${err.message}`);
+      }
+      contextWarningLastSent = nowMs;
+    } else if (pct <= 20) {
+      // Warn — once per 10 min
+      if (nowMs - contextWarningLastSent < 10 * 60_000) return;
+      log(`Context pressure HIGH: ${pct}% until auto-compact → warning Claude`);
+      await notifyClaudeError(t("context.warning", { pct: String(pct) }));
+      contextWarningLastSent = nowMs;
+    }
+  } catch (err: any) {
+    // tmux unavailable — skip silently
+  }
+}
+
+// ── Reply-tool enforcer (2026-04-21 incident fix) ──
+// When a human message was received >REPLY_TIMEOUT_S ago and Claude is
+// still "busy" (not idle, not stuck, not hook-pending) AND no reply has
+// come through fakechat WebSocket, inject a reminder. This catches the
+// case where Claude is running tools (Bash, Playwright) but forgot to
+// call the reply tool.
+async function checkReplyEnforcer() {
+  if (!lastHumanMsgTimestamp) return;
+  const ageMs = Date.now() - lastHumanMsgTimestamp;
+  if (ageMs < REPLY_TIMEOUT_S * 1000) return;
+
+  // Cooldown — don't spam reminders
+  if (Date.now() - lastReplyEnforcerSent < 3 * 60_000) return;
+
+  const state = await diagnoseTmuxState();
+  if (state !== "busy") return; // idle/stuck/crashed handled by watchdog
+
+  const preview = (watchdogFirstMsg?.text || "").slice(0, 80).replace(/\n/g, " ");
+  const minutes = Math.round(ageMs / 60_000);
+  log(`Reply enforcer: Claude busy ${minutes}m without reply → nudging`);
+  await notifyClaudeError(
+    t("reply_enforcer.nudge", { minutes: String(minutes), preview })
+  );
+  lastReplyEnforcerSent = Date.now();
+}
+
+// Combined 60s background tick — cheap, one tmux read per cycle
+setInterval(() => {
+  checkContextPressure().catch(() => {});
+  checkReplyEnforcer().catch(() => {});
+}, 60_000);
 
 log("Bridge started");

@@ -23,5 +23,8 @@
   "watchdog.diag_crashed": "🔄 Claude Code session 似乎已停止回應，可能需要重啟 eclaw-bot tmux session",
   "watchdog.diag_busy": "⏳ Claude 正在執行任務，第二則訊息已排隊等待",
   "error.reply_failed": "⚠️ EClaw 回覆發送失敗 ({error})。請檢查 bridge 是否需要重啟（bridge 重啟後會重新 register + bind 取得新的 botSecret）。你可以用 exec tool 執行: curl -s http://localhost:18800/health 來確認 bridge 狀態。",
-  "error.no_device": "⚠️ 無法回覆：缺少 deviceId/entityId。Bridge 可能尚未完成 EClaw 註冊。請等待或重啟 bridge。"
+  "error.no_device": "⚠️ 無法回覆：缺少 deviceId/entityId。Bridge 可能尚未完成 EClaw 註冊。請等待或重啟 bridge。",
+  "context.warning": "⚠️ Context 即將滿了（剩 {pct}% 到 auto-compact）。請盡快完成當前任務，隨後 bridge 會自動 /clear 釋放空間。避免再讀大檔、避免啟動 Playwright session。",
+  "context.auto_clear": "🧹 Context 剩 {pct}% — bridge 自動執行 /clear 釋放空間。",
+  "reply_enforcer.nudge": "⚠️ 你已經 {minutes} 分鐘沒用 reply tool 回覆使用者訊息了（原文：\"{preview}\"）。請**立刻**呼叫 reply tool 送一段簡短確認，然後繼續任務。不要用 Playwright 點 EClaw UI 的按鈕 — reply tool 才是正確的回覆機制。"
 }
