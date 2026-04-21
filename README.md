@@ -501,6 +501,66 @@ tmux has-session -t eclaw-bridge 2>/dev/null && echo "✅ tmux eclaw-bridge" || 
 cat /tmp/eclaw-bridge.log 2>/dev/null | tail -3
 ```
 
+### 閉環自癒測試（Closed-loop Self-Healing Test）
+
+**適用場景**：Claude Code Channel 有 6+ 個診斷機制（watchdog / auto-wake / reply enforcer / context monitor / error feedback / kanban filter）互相影響。改任何一處之前，**必須用這個流程驗證整條鏈路自動修復不需要手動介入 tmux**。
+
+**核心原則**：測試全程**不允許** `tmux send-keys` 人工輸入給 eclaw-bot。任何需要手動介入才能回覆的場景 = 失敗。
+
+**執行流程**：
+
+```bash
+# ── 一次迭代 ──
+# 1. 透過真實 EClaw API 發訊息（模擬用戶，含 TOKEN 方便比對）
+TS=$(date +%s)
+curl -s -X POST "https://eclawbot.com/api/client/speak" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"deviceId\":\"$DEVICE_ID\",
+    \"deviceSecret\":\"$DEVICE_SECRET\",
+    \"entityId\":2,
+    \"text\":\"[TEST_$TS] 測試訊息 token=$TS\",
+    \"source\":\"client\"
+  }"
+
+# 2. 輪詢 EClaw 訊息歷史直到 bot 回覆（最多 120s）
+START=$(date +%s)
+for i in $(seq 1 24); do
+  sleep 5
+  R=$(curl -s "https://eclawbot.com/api/chat/history?deviceId=$DEVICE_ID&botSecret=$BOT_SECRET&entityId=2&limit=5" \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); [print('FOUND') for m in d.get('messages',[]) if (m.get('from_bot') or m.get('is_from_bot')) and '$TS' in (m.get('text','') or '')]")
+  E=$(( $(date +%s) - START ))
+  [ "$R" = "FOUND" ] && echo "✅ ${E}s" && break
+done
+
+# 3. 如果 timeout，用日誌診斷（不是 tmux send-keys！）
+tail -30 /tmp/eclaw-bridge.log | grep -E "Auto-wake|Reply enforcer|Watchdog|state="
+tmux capture-pane -t eclaw-bot -p | tail -20  # 只讀，不輸入
+
+# 4. 找到根因 → 改 code → commit → 重啟 bridge（tmux kill-session + 重啟）
+# 5. 回到 step 1
+
+# ── 通過標準 ──
+# 連續 2 次 iteration 都在 60s 內收到回覆 = PASS
+```
+
+**關鍵判斷點**：
+- 若 bridge log 沒有 `Auto-wake` / `Reply enforcer` 紀錄 → bridge 自動化機制沒觸發，檢查 `diagnoseTmuxState()`
+- 若有 `state=busy` 連續多次 → 可能是 `diagnoseTmuxState` 誤判（例如把 "Sautéed for 39s" 歷史文字當成 busy）
+- 若有 `Auto-wake nudge sent` 但 Claude 沒回 → Claude 忽略 nudge，檢查 nudge 文字是否夠強硬
+- 若 Claude 回 terminal 沒用 reply tool → 檢查 fakechat MCP 是否 `✔ connected`（`/mcp` 指令）
+- 若 `/mcp` 顯示 `plugin:fakechat:fakechat ✘ failed` → 有 orphan process 占用 port 8787
+
+**2026-04-21 用這個 workflow 抓到 6 個 bug**：
+1. `diagnoseTmuxState` 把歷史 "Sautéed" 誤判成 busy
+2. Auto-wake 一次性 setTimeout 沒重試
+3. Reply enforcer 只在 busy 觸發（漏掉 idle 無回覆的情況）
+4. Reply enforcer 只 notify，沒連動 auto-wake
+5. Nudge 文字沒含訊息內容，Claude 以為沒訊息
+6. /model 重啟 port 8787 orphan 沒清理導致 fakechat MCP failed
+
+完整修復見 [commit 067fc5b](https://github.com/HankHuang0516/claude-code-eclaw-channel/commit/067fc5b) 和 [e0440b8](https://github.com/HankHuang0516/claude-code-eclaw-channel/commit/e0440b8)。
+
 ### 常見問題
 
 | 症狀 | 原因 | 解法 |
