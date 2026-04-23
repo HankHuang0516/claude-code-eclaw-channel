@@ -88,6 +88,17 @@ let contextWarningLastSent = 0;
 // Auto-wake state
 let autoWakeTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAutoWakeSent = 0;
+
+// ── Self-check (2026-04-23 silent-failover fix) ──
+// EClaw's callback registration can become invalid silently (callback_token
+// overwritten by stray re-register, or server-side callback table expired/
+// reset). Bridge keeps running and all infrastructure looks healthy but
+// no webhooks ever arrive. Previous incident: 9-hour silent outage.
+// Fix: every ECLAW_SELF_CHECK_MIN minutes, re-POST /api/channel/register
+// with the SAME persisted callback_token (idempotent — EClaw sees no
+// change on the happy path, re-binds automatically if state drifted).
+const SELF_CHECK_MIN = parseInt(process.env.ECLAW_SELF_CHECK_MIN || "30", 10);
+const SELF_CHECK_ENABLED = (process.env.ECLAW_SELF_CHECK_ENABLED || "true") !== "false";
 // Track most recent channel message text so auto-wake nudge can tell
 // Claude WHICH message to reply to (not just "process pending")
 let lastPendingChannelMsg: string | null = null;
@@ -583,12 +594,23 @@ function startWatchdogTimer() {
 }
 
 // ── EClaw Registration ──
-async function registerWithEClaw() {
-  const tokenBytes = new Uint8Array(32);
-  crypto.getRandomValues(tokenBytes);
-  const callbackToken = Array.from(tokenBytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+// Persist the callback token across self-checks so re-registration is
+// idempotent (EClaw keeps the same Bearer token, so webhooks pushed
+// between checks still authenticate correctly). Generated once on
+// first registration, reused until bridge restart.
+let persistedCallbackToken: string | null = null;
+let lastSelfCheckAt: number | null = null;
+let lastSelfCheckOk: boolean | null = null;
+
+async function registerWithEClaw(isSelfCheck = false) {
+  if (!persistedCallbackToken) {
+    const tokenBytes = new Uint8Array(32);
+    crypto.getRandomValues(tokenBytes);
+    persistedCallbackToken = Array.from(tokenBytes)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  const callbackToken = persistedCallbackToken;
 
   const webhookUrl = process.env.ECLAW_WEBHOOK_URL || `http://localhost:${WEBHOOK_PORT}`;
   const callbackUrl = `${webhookUrl}/eclaw-webhook`;
@@ -605,33 +627,76 @@ async function registerWithEClaw() {
     });
 
     if (!resp.ok) {
-      log(`EClaw registration failed: ${await resp.text()}`);
+      const body = await resp.text();
+      log(`EClaw registration${isSelfCheck ? " self-check" : ""} failed: ${body}`);
+      if (isSelfCheck) {
+        lastSelfCheckAt = Date.now();
+        lastSelfCheckOk = false;
+      }
       return;
     }
 
     const data: any = await resp.json();
+    const prevBound = lastEntityId !== null;
+    const stillBoundAsEntity = (data.entities || []).find(
+      (e: any) => e.boundToThisAccount === true,
+    );
+
+    // On self-check, only log if state changed or bind is missing
+    if (isSelfCheck) {
+      lastSelfCheckAt = Date.now();
+      if (!stillBoundAsEntity) {
+        lastSelfCheckOk = false;
+        log(
+          `⚠️ Self-check: this API key is no longer bound to any entity! Re-binding...`,
+        );
+      } else if (prevBound && stillBoundAsEntity.entityId !== lastEntityId) {
+        lastSelfCheckOk = false;
+        log(
+          `⚠️ Self-check: entity slot changed ${lastEntityId} → ${stillBoundAsEntity.entityId}. Re-binding...`,
+        );
+      } else {
+        lastSelfCheckOk = true;
+        // Silent OK on happy path — no log noise every 30 min
+      }
+    } else {
+      log(`Registered with EClaw. Device: ${data.deviceId}, Entities: ${data.entities?.length}`);
+    }
+
     lastDeviceId = data.deviceId;
-    log(`Registered with EClaw. Device: ${data.deviceId}, Entities: ${data.entities?.length}`);
 
-    // Bind entity
-    const bindResp = await fetch(`${API_BASE}/api/channel/bind`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        channel_api_key: API_KEY,
-        deviceId: data.deviceId,
-        botName: process.env.ECLAW_BOT_NAME || "Claude Bot",
-      }),
-    });
+    // Bind entity (idempotent — if already bound, EClaw returns existing bot secret)
+    // Only re-bind on startup OR if self-check detected a missing/changed binding
+    const needBind = !isSelfCheck || !stillBoundAsEntity || stillBoundAsEntity.entityId !== lastEntityId;
+    if (needBind) {
+      const bindResp = await fetch(`${API_BASE}/api/channel/bind`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel_api_key: API_KEY,
+          deviceId: data.deviceId,
+          botName: process.env.ECLAW_BOT_NAME || "Claude Bot",
+        }),
+      });
 
-    if (bindResp.ok) {
-      const bindData: any = await bindResp.json();
-      lastEntityId = bindData.entityId;
-      botSecret = bindData.botSecret;
-      log(`Bound entity ${bindData.entityId}, publicCode: ${bindData.publicCode}`);
+      if (bindResp.ok) {
+        const bindData: any = await bindResp.json();
+        lastEntityId = bindData.entityId;
+        botSecret = bindData.botSecret;
+        if (isSelfCheck) {
+          log(`Self-check: re-bound entity ${bindData.entityId}, publicCode: ${bindData.publicCode}`);
+          lastSelfCheckOk = true;
+        } else {
+          log(`Bound entity ${bindData.entityId}, publicCode: ${bindData.publicCode}`);
+        }
+      }
     }
   } catch (err: any) {
-    log(`EClaw registration error: ${err.message}`);
+    log(`EClaw registration${isSelfCheck ? " self-check" : ""} error: ${err.message}`);
+    if (isSelfCheck) {
+      lastSelfCheckAt = Date.now();
+      lastSelfCheckOk = false;
+    }
   }
 }
 
@@ -661,6 +726,12 @@ Bun.serve({
         autoWakePollSeconds: AUTO_WAKE_POLL_S,
         autoWakeMaxWaitSeconds: AUTO_WAKE_MAX_WAIT_S,
         autoWakeTimerActive: autoWakeTimer !== null,
+        // 2026-04-23 silent-failover fix
+        selfCheckEnabled: SELF_CHECK_ENABLED,
+        selfCheckIntervalMin: SELF_CHECK_MIN,
+        lastSelfCheckAt: lastSelfCheckAt ? new Date(lastSelfCheckAt).toISOString() : null,
+        lastSelfCheckOk,
+        lastSelfCheckAge: lastSelfCheckAt ? Math.round((Date.now() - lastSelfCheckAt) / 1000) : null,
       });
     }
 
@@ -1000,6 +1071,19 @@ connectWs();
 
 // Register with EClaw platform
 registerWithEClaw().catch((err) => log(`Registration error: ${err.message}`));
+
+// Self-check every N minutes — verifies the callback is still registered
+// on EClaw's side. Re-registers silently on the happy path (idempotent),
+// logs a warning + re-binds if state drifted. Prevents the silent-failover
+// incident where bridge looked healthy but EClaw had stopped pushing.
+if (SELF_CHECK_ENABLED) {
+  setInterval(() => {
+    registerWithEClaw(true).catch((err) =>
+      log(`Self-check error: ${err.message}`),
+    );
+  }, SELF_CHECK_MIN * 60_000);
+  log(`Self-check enabled: every ${SELF_CHECK_MIN} min`);
+}
 
 // ── Context pressure monitor (2026-04-21 incident fix) ──
 // Reads tmux screen every 60s, looks for "N% until auto-compact" marker.

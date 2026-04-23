@@ -162,6 +162,8 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_AUTO_WAKE_POLL_S` | | 若 Claude 還 busy，每 N 秒重新檢查 idle | `5` |
 | `ECLAW_AUTO_WAKE_MAX_WAIT_S` | | 總共最多等多久才放棄 | `300` |
 | `ECLAW_AUTO_WAKE_COOLDOWN_S` | | 連續喚醒的冷卻時間 | `60` |
+| `ECLAW_SELF_CHECK_ENABLED` | | 定期重新註冊 callback，防止靜默失聯 | `true` |
+| `ECLAW_SELF_CHECK_MIN` | | Self-check 間隔分鐘數 | `30` |
 
 ## 啟動方式
 
@@ -550,6 +552,13 @@ tmux capture-pane -t eclaw-bot -p | tail -20  # 只讀，不輸入
 - 若有 `Auto-wake nudge sent` 但 Claude 沒回 → Claude 忽略 nudge，檢查 nudge 文字是否夠強硬
 - 若 Claude 回 terminal 沒用 reply tool → 檢查 fakechat MCP 是否 `✔ connected`（`/mcp` 指令）
 - 若 `/mcp` 顯示 `plugin:fakechat:fakechat ✘ failed` → 有 orphan process 占用 port 8787
+
+**2026-04-23 用這個 workflow 抓到 silent-failover bug**：
+- 10:24 後 EClaw 端 callback 註冊失效（原因未知，推測 callback_token 被覆蓋或內部表 reset）
+- Bridge 完全正常：WS connected、health OK、port 開著
+- **但 EClaw 不推訊息過來** — 使用者連發 2 則，bridge log 完全沒有 webhook 紀錄
+- 9 小時靜默失聯才被發現
+- 修復：[commit XXX](https://github.com/HankHuang0516/claude-code-eclaw-channel) 新增 **每 30 分鐘 self-check**（重新註冊 callback，idempotent），暴露 `lastSelfCheckAt` / `lastSelfCheckOk` 到 `/health`
 
 **2026-04-21 用這個 workflow 抓到 7 個 bug**：
 1. `diagnoseTmuxState` 把歷史 "Sautéed" 誤判成 busy
