@@ -15,6 +15,11 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { t, setLocale, detectLanguage } from "./i18n.ts";
+import {
+  classifyTmuxScreen,
+  decideAutoWakeTickAction,
+  decideReplyEnforcerAction,
+} from "./bridge-state.ts";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -303,50 +308,7 @@ async function diagnoseTmuxState(): Promise<string> {
       timeout: 5000,
       encoding: "utf-8",
     });
-
-    // Check for pending hook /ask FIRST (pendingAsks Map has entries)
-    if (pendingAsks.size > 0) {
-      return "hook_pending";
-    }
-
-    // Stuck on a confirmation prompt
-    if (
-      screen.includes("Do you want to") ||
-      screen.includes("Esc to cancel") ||
-      screen.includes("Enter to confirm") ||
-      screen.includes("Enter to select")
-    ) {
-      return "stuck_prompt";
-    }
-
-    // Claude Code shows "esc to interrupt" ONLY while a turn is
-    // actively running. When idle, the footer shows only
-    // "⏵⏵ bypass permissions on (shift+tab to cycle)" without any
-    // "esc to interrupt" text. This is the ONLY reliable way to
-    // distinguish active work from leftover screen text — keywords
-    // like "Sautéed for 39s" / "thinking" / "tokens" persist on
-    // screen even AFTER the turn finishes.
-    if (screen.includes("esc to interrupt")) {
-      return "busy";
-    }
-
-    // Past this point the footer doesn't have "esc to interrupt" →
-    // Claude is not actively running a turn. Now distinguish idle vs
-    // stuck on a confirmation (but the stuck_prompt check above
-    // already caught those).
-    const lines = screen.trim().split("\n").filter(Boolean);
-    const lastContentLine = lines[lines.length - 1] || "";
-    if (lastContentLine.includes("❯") || lastContentLine.includes("bypass permissions")) {
-      return "idle";
-    }
-
-    // Screen is empty or unrecognizable
-    if (screen.trim().length < 20) {
-      return "crashed";
-    }
-
-    // Default: assume busy
-    return "busy";
+    return classifyTmuxScreen(screen, { hookPending: pendingAsks.size > 0 });
   } catch {
     // tmux not available or errored — can't diagnose
     return "busy";
@@ -399,48 +361,36 @@ function scheduleAutoWake() {
     }
 
     const state = await diagnoseTmuxState();
-    log(`Auto-wake tick@${pollAge}s: state=${state}`);
+    const action = decideAutoWakeTickAction(state as any);
+    log(`Auto-wake tick@${pollAge}s: state=${state} action=${action.type}`);
 
-    if (state === "hook_pending") {
-      // Permission approval card already on EClaw, user needs to click.
-      // Don't nudge — user interaction is the blocker, not Claude.
-      log(`Auto-wake tick@${pollAge}s: bailing out (hook_pending)`);
+    if (action.type === "bail") {
+      // hook_pending → user has a card to click; crashed → session
+      // looks dead. Either way, don't nudge a blocked session.
       return;
     }
 
-    if (state === "crashed") {
-      // Session looks dead — something outside our control. Bail out
-      // so we don't spam a dead session.
-      log(`Auto-wake tick@${pollAge}s: bailing out (crashed — session may need manual restart)`);
-      return;
-    }
-
-    if (state === "stuck_prompt") {
+    if (action.type === "resolve_stuck_prompt") {
       // Claude Code's built-in "Do you want to create/proceed?"
       // confirmations that --dangerously-skip-permissions doesn't
-      // bypass. If we just bail out here, user messages sit forever.
-      // Auto-resolve: send Down+Enter to pick "Yes, and always allow"
-      // (2nd option, more permissive than Yes), then keep polling.
-      // This mirrors the previous hourly auto-approve cron but inline.
+      // bypass. Auto-resolve: send Down+Enter to pick "Yes, and
+      // always allow" (2nd option, more permissive than Yes), then
+      // keep polling.
       try {
         const { execSync } = await import("node:child_process");
-        log(`Auto-wake tick@${pollAge}s: stuck_prompt detected → auto-sending Down+Enter`);
         execSync("tmux send-keys -t eclaw-bot Down Enter", { timeout: 3000 });
       } catch (err: any) {
         log(`Auto-wake tick@${pollAge}s: stuck_prompt auto-resolve failed: ${err.message}`);
       }
-      // Keep polling — after the prompt resolves, state should flip to
-      // busy (processing the approved tool) and eventually idle.
       autoWakeTimer = setTimeout(tick, AUTO_WAKE_POLL_S * 1000);
       return;
     }
 
-    if (state === "busy") {
-      // busy → poll again soon, wait for idle
+    if (action.type === "wait") {
       autoWakeTimer = setTimeout(tick, AUTO_WAKE_POLL_S * 1000);
       return;
     }
-    // state === "idle" → proceed with nudge below
+    // action.type === "nudge" → proceed with nudge below
 
     try {
       const { execSync } = await import("node:child_process");
@@ -1143,41 +1093,43 @@ async function checkContextPressure() {
 // Previously gated to "busy" only, which missed the exact failure mode
 // we wanted to catch (Claude went idle WITHOUT using reply tool).
 async function checkReplyEnforcer() {
-  if (!lastHumanMsgTimestamp) return;
-  const ageMs = Date.now() - lastHumanMsgTimestamp;
-  if (ageMs < REPLY_TIMEOUT_S * 1000) return;
+  const state = (await diagnoseTmuxState()) as any;
+  const now = Date.now();
+  const action = decideReplyEnforcerAction(state, {
+    lastHumanMsgMs: lastHumanMsgTimestamp,
+    nowMs: now,
+    replyTimeoutS: REPLY_TIMEOUT_S,
+    lastEnforcerMs: lastReplyEnforcerSent,
+    enforcerCooldownMs: 3 * 60_000,
+  });
 
-  // Cooldown — don't spam reminders
-  if (Date.now() - lastReplyEnforcerSent < 3 * 60_000) return;
-
-  const state = await diagnoseTmuxState();
-  // hook_pending → user has a card to click, wait for them
-  // crashed → can't do anything
-  if (state === "hook_pending" || state === "crashed") return;
-
-  // stuck_prompt → Claude is blocked on an internal confirmation.
-  // Auto-resolve so the backlog message can proceed. This is separate
-  // from the nudge itself — schedule auto-wake to do the actual
-  // resolution + retry loop.
-  if (state === "stuck_prompt") {
-    log(`Reply enforcer: Claude stuck_prompt ${Math.round(ageMs / 60_000)}m without reply → triggering auto-wake to resolve`);
-    scheduleAutoWake();
-    lastReplyEnforcerSent = Date.now();
+  if (action.type === "skip") {
+    // fresh / cooldown / hook_pending / crashed / no_human_msg — say nothing
     return;
   }
 
-  const preview = (watchdogFirstMsg?.text || "").slice(0, 80).replace(/\n/g, " ");
+  const ageMs = now - (lastHumanMsgTimestamp ?? now);
   const minutes = Math.round(ageMs / 60_000);
-  log(`Reply enforcer: Claude ${state} ${minutes}m without reply → nudging (state=${state})`);
+
+  if (action.type === "trigger_auto_wake_only") {
+    // stuck_prompt → auto-wake will auto-resolve the prompt + keep polling.
+    log(`Reply enforcer: Claude stuck_prompt ${minutes}m without reply → triggering auto-wake to resolve`);
+    scheduleAutoWake();
+    lastReplyEnforcerSent = now;
+    return;
+  }
+
+  // nudge_only (busy) or nudge_and_auto_wake (idle)
+  const preview = (watchdogFirstMsg?.text || "").slice(0, 80).replace(/\n/g, " ");
+  log(`Reply enforcer: Claude ${state} ${minutes}m without reply → nudging (action=${action.type})`);
   await notifyClaudeError(
     t("reply_enforcer.nudge", { minutes: String(minutes), preview })
   );
-  // If Claude is idle, the reminder alone just sits in the MCP inbox
-  // and won't be seen. Schedule auto-wake so a turn is triggered.
-  if (state === "idle") {
+  if (action.type === "nudge_and_auto_wake") {
+    // idle: reminder alone sits in MCP inbox unseen — kick a turn.
     scheduleAutoWake();
   }
-  lastReplyEnforcerSent = Date.now();
+  lastReplyEnforcerSent = now;
 }
 
 // Combined 60s background tick — cheap, one tmux read per cycle
