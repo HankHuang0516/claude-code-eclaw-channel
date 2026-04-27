@@ -43,6 +43,18 @@ interface PendingAsk {
 }
 const pendingAsks: Map<string, PendingAsk> = new Map();
 
+// ── /ask zombie GC (2026-04-27 silent-block fix) ──
+// PreToolUse hook /ask cards posted to EClaw stay in pendingAsks until
+// the user clicks a button. If user never clicks (card scrolled out of
+// view, user forgot, etc), the entry stays forever. diagnoseTmuxState()
+// returns "hook_pending" any time pendingAsks.size > 0, which makes
+// auto-wake bail out → ALL future channel messages get blocked.
+//
+// Fix: auto-expire /ask entries older than ASK_TTL_MS. The expired
+// hook receives a "deny" so the underlying tool call is rejected
+// rather than hanging forever.
+const ASK_TTL_MS = parseInt(process.env.ECLAW_ASK_TTL_MIN || "30", 10) * 60_000;
+
 // ── Watchdog mechanism ──
 const WATCHDOG_TIMEOUT_S = parseInt(process.env.ECLAW_WATCHDOG_TIMEOUT || "30", 10);
 const WATCHDOG_ENABLED = (process.env.ECLAW_WATCHDOG_ENABLED || "true") !== "false";
@@ -682,6 +694,9 @@ Bun.serve({
         lastSelfCheckAt: lastSelfCheckAt ? new Date(lastSelfCheckAt).toISOString() : null,
         lastSelfCheckOk,
         lastSelfCheckAge: lastSelfCheckAt ? Math.round((Date.now() - lastSelfCheckAt) / 1000) : null,
+        // 2026-04-27 zombie /ask fix
+        pendingAsks: pendingAsks.size,
+        askTtlMin: ASK_TTL_MS / 60_000,
       });
     }
 
@@ -1132,8 +1147,32 @@ async function checkReplyEnforcer() {
   lastReplyEnforcerSent = now;
 }
 
+// GC stale /ask entries — runs every minute on the same tick as
+// context pressure / reply enforcer to keep things cheap.
+function gcPendingAsks() {
+  const now = Date.now();
+  let expired = 0;
+  for (const [askId, entry] of pendingAsks) {
+    if (now - entry.timestamp > ASK_TTL_MS) {
+      // Tell the waiting hook the request expired — they'll deny the
+      // underlying tool. Without this, the hook curl waits forever.
+      try {
+        entry.resolve("deny");
+      } catch {
+        /* hook may have already given up; that's fine */
+      }
+      pendingAsks.delete(askId);
+      expired++;
+    }
+  }
+  if (expired > 0) {
+    log(`/ask GC: expired ${expired} stale entries (older than ${ASK_TTL_MS / 60_000}min). pendingAsks.size=${pendingAsks.size}`);
+  }
+}
+
 // Combined 60s background tick — cheap, one tmux read per cycle
 setInterval(() => {
+  gcPendingAsks();
   checkContextPressure().catch(() => {});
   checkReplyEnforcer().catch(() => {});
 }, 60_000);

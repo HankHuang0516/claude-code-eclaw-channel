@@ -164,6 +164,7 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_AUTO_WAKE_COOLDOWN_S` | | 連續喚醒的冷卻時間 | `60` |
 | `ECLAW_SELF_CHECK_ENABLED` | | 定期重新註冊 callback，防止靜默失聯 | `true` |
 | `ECLAW_SELF_CHECK_MIN` | | Self-check 間隔分鐘數 | `30` |
+| `ECLAW_ASK_TTL_MIN` | | PreToolUse /ask 殭屍 GC TTL（用戶沒按按鈕 N 分鐘後自動 deny）| `30` |
 
 ## 啟動方式
 
@@ -552,6 +553,15 @@ tmux capture-pane -t eclaw-bot -p | tail -20  # 只讀，不輸入
 - 若有 `Auto-wake nudge sent` 但 Claude 沒回 → Claude 忽略 nudge，檢查 nudge 文字是否夠強硬
 - 若 Claude 回 terminal 沒用 reply tool → 檢查 fakechat MCP 是否 `✔ connected`（`/mcp` 指令）
 - 若 `/mcp` 顯示 `plugin:fakechat:fakechat ✘ failed` → 有 orphan process 占用 port 8787
+
+**2026-04-27 抓到 zombie /ask block-everything bug**：
+- 使用者報「self-check 失效了」
+- 實際上 self-check 正常（每 30 分鐘 silent 跑），但 PreToolUse hook 的 `/ask` cards 在 EClaw 上沒被點按
+- 累積 2 張殭屍卡（一張 6 天前、一張 3 天前），`pendingAsks.size > 0` 永久成立
+- `diagnoseTmuxState()` 看到 `pendingAsks.size > 0` 就回傳 `hook_pending`
+- Auto-wake 看 `hook_pending` 就 bail out → **所有新訊息都被擋住**
+- 修復：加 `ECLAW_ASK_TTL_MIN`（預設 30 分鐘），每 60s GC 過期的 `/ask`，自動回傳 `"deny"` 給長等的 hook curl，把 `pendingAsks.size` 拉回 0
+- `/health` 暴露 `pendingAsks` count 方便偵測
 
 **2026-04-23 用這個 workflow 抓到 silent-failover bug**：
 - 10:24 後 EClaw 端 callback 註冊失效（原因未知，推測 callback_token 被覆蓋或內部表 reset）
