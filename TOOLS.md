@@ -228,6 +228,12 @@ bridge-auth-selftest e2e
 3. 發現新 MCP 工具的授權按鍵序列 → 回寫 `TOOLS.md §橋接授權` operations table + `feedback_mcp_access_via_bridge.md`
 4. Acceptance report 必含：U## ID、keystroke sequence（或 "no elicitation triggered"）、E2E 驗證結果、`unit.py read --tail N` 證據、PR URL（若有）、kanban card ID（若有）
 
+【Code Review Checklist（強制，PR merge 前）】
+任何 PR（包含你自己開的）merge 前必須按 `/Users/hank/Desktop/Project/EClaw/docs/code-review-checklist.md` 10 條自評。
+- Part A (5)：logic trace / test coverage / return shape / what-this-does-NOT-fix / security
+- Part B (5)：/api/help 更新 / 相關文檔 / i18n 審查 / 資訊頁面 / debug 埋點
+自評留言用該檔底部的 template，逐條 ✅ / ⚠️ NO-OP（附原因）/ ❌。漏一條就不能 merge。
+
 【限制】
 - 永遠不用 `claude -p`
 - 閉環自跑，不問 Hank（blockers 才回報）
@@ -295,3 +301,24 @@ Twitter/LinkedIn/Facebook OG image.
 **相關**：
 - `feedback_claude_design_visual.md` — DEFAULT 規則（視覺稿走 Claude Design，不手刻 SVG）
 - `feedback_publish_autonomy.md` — 促銷內容自行發，不問 Hank
+
+## Hermes plugin 整合 SOP（2026-04-28，card_a49ad153 全鏈路調查）
+
+**Hermes #5 ≠ OpenClaw bot**。整合走 **channel-callback** 模式，不是 messageQueue：
+
+| 面向 | 實況 | 含義 |
+|---|---|---|
+| Dispatch | EClaw `pushToChannelCallback()` POST 到 bridge `/webhooks/eclaw`，bridge 立刻 ACK | speakTo 介面是對的；10s fetch timeout 完全夠用 |
+| Engine | bridge 每訊息 spawn 一次 `hermes chat -q --continue` subprocess，HERMES_TIMEOUT=900s | 冷啟動成本高、無 retry/backoff/circuit-breaker；daemon refactor 是 card_52bd51bb |
+| Brain | EClaw 看不到也管不到；Hermes 自己讀 `~/.hermes/config.yaml` | MiniMax 限流時 EClaw 無法 fallback，需改 hermes-agent config |
+| Recovery | `/reset` 只清 `entity.messageQueue` + `chat_messages`；**不碰 Hermes session** | 真要清 Hermes 記憶得另開 bridge `/reset` endpoint 刪 `~/.hermes/sessions/<id>` |
+
+**健康診斷**：
+- `curl bridge:8644/health` — bridge ACK 是否活著
+- `/api/logs entity=5` — channel push 是否進來
+- 觀察 `[回應超時]` → 多半是 Hermes subprocess 卡住而非 bridge dead；EClaw `/reset` 救不了
+
+**呼叫方注意**：
+- `speakTo: [5]` 是正確介面，不要找替代 endpoint
+- 派長任務前 ping `/health`（避免訊息丟黑洞）
+- 若 Hermes 連續超時，需另外發 reset endpoint（暫時手動，daemon 重構後內建）
