@@ -20,6 +20,7 @@ import {
   decideAutoWakeTickAction,
   decideReplyEnforcerAction,
 } from "./bridge-state.ts";
+import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -955,8 +956,21 @@ Bun.serve({
           displayText += `\n[${body.mediaType}] ${body.mediaUrl}`;
         }
 
-        // Prepend sender info
-        const fullText = `[EClaw from ${from}] ${displayText}`;
+        // Prepend sender info and centrally managed EClaw prompt policy.
+        // If policy fetch fails, keep delivering the original message.
+        let fullText = `[EClaw from ${from}] ${displayText}`;
+        try {
+          const compiledPolicy = await fetchCompiledPromptPolicy({
+            apiBase: API_BASE,
+            deviceId: lastDeviceId,
+            entityId: lastEntityId,
+            botSecret,
+            channel: "claude_code",
+          });
+          fullText = applyCompiledPromptPolicy(fullText, compiledPolicy);
+        } catch (err: any) {
+          log(`Prompt policy fetch skipped: ${err.message}`);
+        }
 
         // ── Kanban emergency mute (opt-out only) ──
         // Kanban IS the bot's work queue — normally we forward it. Only
