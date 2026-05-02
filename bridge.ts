@@ -21,6 +21,7 @@ import {
   decideReplyEnforcerAction,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
+import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -970,6 +971,21 @@ Bun.serve({
           fullText = applyCompiledPromptPolicy(fullText, compiledPolicy);
         } catch (err: any) {
           log(`Prompt policy fetch skipped: ${err.message}`);
+        }
+
+        // Phase 2 of EClaw#2285 — fetch the smart-routing system prompt from
+        // the server (single source of truth, replaces the ROUTING block that
+        // used to live in fakechat-instructions.txt). Cached per process; a
+        // missing endpoint or older server returns "" and we deliver as-is.
+        try {
+          const routingPolicy = await fetchRoutingPolicy({
+            apiBase: API_BASE,
+            channel: "claude_code",
+            lang: "zh-TW",
+          });
+          fullText = applyRoutingPolicy(fullText, routingPolicy);
+        } catch (err: any) {
+          log(`Routing policy fetch skipped: ${err.message}`);
         }
 
         // ── Kanban emergency mute (opt-out only) ──
