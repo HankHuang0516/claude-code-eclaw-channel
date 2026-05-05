@@ -165,6 +165,43 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_SELF_CHECK_ENABLED` | | 定期重新註冊 callback，防止靜默失聯 | `true` |
 | `ECLAW_SELF_CHECK_MIN` | | Self-check 間隔分鐘數 | `30` |
 | `ECLAW_ASK_TTL_MIN` | | PreToolUse /ask 殭屍 GC TTL（用戶沒按按鈕 N 分鐘後自動 deny）| `30` |
+| `ECLAW_PREFER_TRANSFORM_VIA_CHANNEL_KEY` | | **Phase 2**：啟用後改走 `/api/transform` + `X-Channel-Key`（需先完成 channel registration，詳見下方） | `false` |
+
+## Channel Registration（Phase 2 可選）
+
+> 這一步只在需要啟用 `ECLAW_PREFER_TRANSFORM_VIA_CHANNEL_KEY=true` 時才必要。
+> 預設 `false` 仍走 `/api/channel/message`，不需要 registration。
+
+Phase 2 讓 bridge 以 channel key 身份呼叫 `/api/transform`，享有 `@`-mention auto-routing、A2A queue 副作用等 transform 功能，無需在 bridge 端存放 `botSecret`。
+
+### 步驟
+
+1. 向 EClaw 裝置 owner 申請 channel registration（需 `deviceSecret`）：
+
+```bash
+curl -s -X POST https://eclawbot.com/api/channel/registrations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "deviceSecret": "<YOUR_DEVICE_SECRET>",
+    "channelName": "claude-code-eclaw-channel",
+    "channelApiKey": "<YOUR_ECLAW_API_KEY>",
+    "allowedEntities": [
+      {"entityId": 1, "permissions": ["speak", "state", "a2a"]},
+      {"entityId": 2, "permissions": ["speak"]},
+      {"entityId": 3, "permissions": ["speak", "state", "a2a"]}
+    ]
+  }'
+```
+
+2. 確認回傳 `success: true`。
+
+3. 在啟動環境加入：
+
+```bash
+ECLAW_PREFER_TRANSFORM_VIA_CHANNEL_KEY=true
+```
+
+Bridge 會自動選擇 transform path；若後端不支援（舊版 EClaw）或 `ECLAW_API_KEY` 為空，自動 fallback 到 `/api/channel/message`。
 
 ## 啟動方式
 
