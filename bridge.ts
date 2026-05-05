@@ -22,6 +22,7 @@ import {
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
+import { sendReplyToEClaw } from "./eclaw-sender.ts";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -32,6 +33,8 @@ const WEBHOOK_PORT = parseInt(process.env.ECLAW_WEBHOOK_PORT || "18800", 10);
 const FAKECHAT_WS = process.env.FAKECHAT_WS || "ws://localhost:8787/ws";
 const API_KEY = process.env.ECLAW_API_KEY || "";
 const API_BASE = (process.env.ECLAW_API_BASE || "https://eclawbot.com").replace(/\/$/, "");
+// Phase 2: channel key path via /api/transform. Default false = legacy path.
+const PREFER_TRANSFORM_VIA_CHANNEL_KEY = process.env.ECLAW_PREFER_TRANSFORM_VIA_CHANNEL_KEY === "true";
 
 // Track deviceId/entityId from incoming messages for reply routing
 let lastDeviceId: string | null = null;
@@ -238,31 +241,21 @@ async function forwardReplyToEClaw(text: string, card?: any) {
     return;
   }
 
-  log(`Forwarding reply to EClaw: "${text.slice(0, 50)}..." device=${lastDeviceId} entity=${lastEntityId}${card ? " (with card)" : ""}`);
+  const via = PREFER_TRANSFORM_VIA_CHANNEL_KEY && API_KEY ? "transform/channel-key" : "channel/message";
+  log(`Forwarding reply to EClaw (${via}): "${text.slice(0, 50)}..." device=${lastDeviceId} entity=${lastEntityId}${card ? " (with card)" : ""}`);
 
-  const payload: any = {
-    channel_api_key: API_KEY,
+  await sendReplyToEClaw({
+    apiBase: API_BASE,
+    apiKey: API_KEY,
+    preferTransformViaChannelKey: PREFER_TRANSFORM_VIA_CHANNEL_KEY,
     deviceId: lastDeviceId,
     entityId: lastEntityId,
     botSecret: botSecret || "",
-    message: text,
-    state: "IDLE",
-  };
-  if (card) payload.card = card;
-
-  const resp = await fetch(`${API_BASE}/api/channel/message`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    text,
+    card,
   });
 
-  if (resp.ok) {
-    log("Reply forwarded to EClaw successfully");
-  } else {
-    const errText = await resp.text();
-    log(`Reply forward failed (${resp.status}): ${errText}`);
-    throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
-  }
+  log(`Reply forwarded to EClaw successfully (${via})`);
 }
 
 /**
