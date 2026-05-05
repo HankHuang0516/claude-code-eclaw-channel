@@ -1077,6 +1077,42 @@ if (SELF_CHECK_ENABLED) {
 // Reads tmux screen every 60s, looks for "N% until auto-compact" marker.
 // - ≤5%  → auto /clear (critical)
 // - ≤20% → warn Claude once per 10 min
+// Context-pressure recovery strategy (revised 2026-05-05)
+// ─────────────────────────────────────────────────────────
+// Three states detectable on the eclaw-bot tmux pane:
+//
+//   1. `N% until auto-compact`        — Claude Code's own warning,
+//                                       N is percent until forced
+//                                       auto-compact. Acts as early
+//                                       warning.
+//   2. `Context limit reached · /compact or /clear to continue`
+//                                     — context window IS full.
+//                                       Claude won't process any new
+//                                       turn until manually compacted
+//                                       or cleared. This pattern is
+//                                       what users were stuck on
+//                                       (2026-05-05 incident: Claude
+//                                       Code UI changed and the old
+//                                       regex missed this state, so
+//                                       bridge sat idle while Claude
+//                                       was bricked).
+//   3. `Error during compaction: API Error: 400 ... no low surrogate
+//      in string` — compact itself failed (corrupt Unicode in the
+//                  conversation history that the API can't
+//                  serialize). At this point we have no way to
+//                  recover other than /clear.
+//
+// Action priority:
+//   - Always prefer /compact over /clear because /compact preserves
+//     conversation context (just summarized). Pre-fix code went
+//     straight to /clear at the 5% threshold, which silently nuked
+//     context and pissed users off.
+//   - If /compact fails → /clear is the only recourse.
+//   - 60-second cooldown so we don't ping-pong the same recovery on
+//     every tick.
+let contextRecoveryLastAttemptMs = 0;
+const CONTEXT_RECOVERY_COOLDOWN_MS = 60_000;
+
 async function checkContextPressure() {
   if (!CONTEXT_WATCH_ENABLED) return;
   try {
@@ -1085,28 +1121,80 @@ async function checkContextPressure() {
       timeout: 5000,
       encoding: "utf-8",
     });
-    const match = screen.match(/(\d+)%\s*until auto-compact/);
-    if (!match) return;
-    const pct = parseInt(match[1], 10);
     const nowMs = Date.now();
 
-    if (pct <= 5) {
-      // Critical — auto /clear if we haven't in last 5 minutes
-      if (nowMs - contextWarningLastSent < 5 * 60_000) return;
-      log(`Context pressure CRITICAL: ${pct}% until auto-compact → auto /clear`);
+    // ── State 3: previous /compact errored (corrupt unicode etc.) ──
+    // Detected first because it can co-occur with state 2 still on
+    // screen and we want to skip straight to /clear instead of
+    // re-trying /compact.
+    if (
+      /Error during compaction/.test(screen) ||
+      /no low surrogate in string/.test(screen)
+    ) {
+      if (nowMs - contextRecoveryLastAttemptMs < CONTEXT_RECOVERY_COOLDOWN_MS) return;
+      log(`Context recovery: /compact failed (corrupt history) → fallback /clear`);
       try {
         execSync("tmux send-keys -t eclaw-bot Escape", { timeout: 3000 });
         execSync("sleep 1 && tmux send-keys -t eclaw-bot '/clear' Enter", {
           timeout: 5000,
           shell: "/bin/bash",
         });
+        await notifyClaudeError(t("context.auto_clear", { pct: "0" }));
+      } catch (err: any) {
+        log(`Auto /clear (after compact failure) failed: ${err.message}`);
+      }
+      contextRecoveryLastAttemptMs = nowMs;
+      return;
+    }
+
+    // ── State 2: hard limit reached, no percentage shown ──
+    // The pane prints "Context limit reached · /compact or /clear to
+    // continue" and Claude is fully blocked. Send /compact (preserves
+    // context). If it fails on the next tick (state 3 above triggers),
+    // we'll fall back to /clear.
+    if (/Context limit reached/.test(screen)) {
+      if (nowMs - contextRecoveryLastAttemptMs < CONTEXT_RECOVERY_COOLDOWN_MS) return;
+      log(`Context limit reached → auto /compact`);
+      try {
+        execSync("tmux send-keys -t eclaw-bot Escape", { timeout: 3000 });
+        execSync("sleep 1 && tmux send-keys -t eclaw-bot '/compact' Enter", {
+          timeout: 5000,
+          shell: "/bin/bash",
+        });
+        await notifyClaudeError(t("context.auto_clear", { pct: "0" }));
+      } catch (err: any) {
+        log(`Auto /compact failed: ${err.message}`);
+      }
+      contextRecoveryLastAttemptMs = nowMs;
+      return;
+    }
+
+    // ── State 1: percentage warning, still room left ──
+    const match = screen.match(/(\d+)%\s*until auto-compact/);
+    if (!match) return;
+    const pct = parseInt(match[1], 10);
+
+    if (pct <= 5) {
+      // Critical — auto /compact PRO-ACTIVELY (preserve context).
+      // Was /clear pre-fix; switched to /compact 2026-05-05 because
+      // (a) /compact keeps the conversation thread alive and
+      // (b) Claude users running through the channel lose work when
+      // we silently /clear them mid-task.
+      if (nowMs - contextRecoveryLastAttemptMs < CONTEXT_RECOVERY_COOLDOWN_MS) return;
+      log(`Context pressure CRITICAL: ${pct}% until auto-compact → auto /compact (preserves context)`);
+      try {
+        execSync("tmux send-keys -t eclaw-bot Escape", { timeout: 3000 });
+        execSync("sleep 1 && tmux send-keys -t eclaw-bot '/compact' Enter", {
+          timeout: 5000,
+          shell: "/bin/bash",
+        });
         await notifyClaudeError(t("context.auto_clear", { pct: String(pct) }));
       } catch (err: any) {
-        log(`Auto /clear failed: ${err.message}`);
+        log(`Auto /compact failed: ${err.message}`);
       }
-      contextWarningLastSent = nowMs;
+      contextRecoveryLastAttemptMs = nowMs;
     } else if (pct <= 20) {
-      // Warn — once per 10 min
+      // Warn — once per 10 min (separate cooldown var)
       if (nowMs - contextWarningLastSent < 10 * 60_000) return;
       log(`Context pressure HIGH: ${pct}% until auto-compact → warning Claude`);
       await notifyClaudeError(t("context.warning", { pct: String(pct) }));
