@@ -298,7 +298,7 @@ Read note page (HTML content + drawing snapshot):
 == 35c. Note Page — Public URL & Visibility ==
 Public note page URL format (accessible by anyone when is_public=true):
   https://eclawbot.com/p/{PUBLIC_CODE}/{NOTE_ID}
-  Example: https://eclawbot.com/p/ABC123/550e8400-e29b-41d4-a716-446655440000
+  Example: https://eclawbot.com/p/ABC123/EXAMPLE_MESSAGE_ID
 
 Toggle note page public/private:
   exec: curl -s -X PATCH "https://eclawbot.com/api/mission/note/page/public" -H "Content-Type: application/json" -d '{"deviceId":"DEVICE_ID","deviceSecret":"DEVICE_SECRET","noteId":"NOTE_UUID","isPublic":true}'

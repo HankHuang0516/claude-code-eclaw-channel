@@ -6,3 +6,5 @@ bun.lock
 .env.*
 /tmp/
 .mcp.json
+
+reply-callback-check.sh

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "eclaw": {
+      "env": {
+        "ECLAW_API_KEY": "YOUR_ECLAW_API_KEY"
+      }
+    }
+  }
+}

@@ -2,12 +2,12 @@
 
 ## EClaw Credentials
 
-- **deviceId:** 480def4c-2183-4d8e-afd0-b131ae89adcc
+- **deviceId:** YOUR_DEVICE_ID
 - **entityId:** 2 (原本 #3，已 compact)
-- **botSecret (mine):** 944738a1eece24cf64916beab7ce2640
-- **botSecret (#1 LOBSTER):** f7a6449428881b8a32fff408df1e0008
-- **deviceSecret:** 3a4ddb10-2609-42b6-908a-f9d446c97ff9-7cff9697-6391-415d-a282-4e8aea3be49a
-- **Publisher Key:** K4KNljNhEfbNfLTOIOKw1OZXL4HIEe9zn0OKsq5aIxs970I8fn8mZjIHEbxGx
+- **botSecret (mine):** YOUR_BOT_SECRET
+- **botSecret (#1 LOBSTER):** OTHER_ENTITY_BOT_SECRET
+- **deviceSecret:** YOUR_DEVICE_SECRET
+- **Publisher Key:** [REDACTED-PUBLISHER-KEY]
 
 ## EClaw Team Structure
 
@@ -88,19 +88,19 @@
 
 ```bash
 # 回覆訊息（必須用 transform）
-curl -s -X POST "https://eclawbot.com/api/transform" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","entityId":2,"botSecret":"944738a1eece24cf64916beab7ce2640","message":"YOUR REPLY","state":"IDLE"}'
+curl -s -X POST "https://eclawbot.com/api/transform" -H "Content-Type: application/json" -d '{"deviceId":"YOUR_DEVICE_ID","entityId":2,"botSecret":"YOUR_BOT_SECRET","message":"YOUR REPLY","state":"IDLE"}'
 
 # 讀 Dashboard
-curl -s "https://eclawbot.com/api/mission/dashboard?deviceId=480def4c-2183-4d8e-afd0-b131ae89adcc&botSecret=944738a1eece24cf64916beab7ce2640&entityId=2"
+curl -s "https://eclawbot.com/api/mission/dashboard?deviceId=YOUR_DEVICE_ID&botSecret=YOUR_BOT_SECRET&entityId=2"
 
 # 私訊特定 entity
-curl -s -X POST "https://eclawbot.com/api/entity/speak-to" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","fromEntityId":2,"toEntityId":TARGET,"botSecret":"944738a1eece24cf64916beab7ce2640","text":"MSG"}'
+curl -s -X POST "https://eclawbot.com/api/entity/speak-to" -H "Content-Type: application/json" -d '{"deviceId":"YOUR_DEVICE_ID","fromEntityId":2,"toEntityId":TARGET,"botSecret":"YOUR_BOT_SECRET","text":"MSG"}'
 
 # 廣播
-curl -s -X POST "https://eclawbot.com/api/entity/broadcast" -H "Content-Type: application/json" -d '{"deviceId":"480def4c-2183-4d8e-afd0-b131ae89adcc","fromEntityId":2,"botSecret":"944738a1eece24cf64916beab7ce2640","text":"MSG"}'
+curl -s -X POST "https://eclawbot.com/api/entity/broadcast" -H "Content-Type: application/json" -d '{"deviceId":"YOUR_DEVICE_ID","fromEntityId":2,"botSecret":"YOUR_BOT_SECRET","text":"MSG"}'
 
 # 歷史訊息（真實 DB log，替代 JSONL grep）
-curl -s "https://eclawbot.com/api/chat/history?deviceId=480def4c-2183-4d8e-afd0-b131ae89adcc&entityId=2&botSecret=944738a1eece24cf64916beab7ce2640&limit=100"
+curl -s "https://eclawbot.com/api/chat/history?deviceId=YOUR_DEVICE_ID&entityId=2&botSecret=YOUR_BOT_SECRET&limit=100"
 ```
 
 ## 總指揮規則（2026-03-25 啟用）
