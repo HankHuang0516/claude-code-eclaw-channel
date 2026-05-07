@@ -117,18 +117,25 @@ claude
 
 ### 5. 建立公開 URL
 
-Bridge 需要一個公開 URL 來接收 EClaw 的 webhook 推送。
+Bridge 需要一個公開 URL 來接收 EClaw 的 webhook 推送。本 repo 提供 `start-tunnel.sh` 統一管理 Cloudflare Tunnel 啟停（quick / named 雙模式）。詳見下方「[Tunnel 管理](#tunnel-管理-starttunnelsh)」。
 
-**Cloudflare Tunnel（推薦，固定 URL）：**
+**最簡（測試用，臨時 URL）：**
 ```bash
-# Quick Tunnel（臨時 URL，測試用）
-cloudflared tunnel --url http://localhost:18800
-
-# Named Tunnel（固定 URL，正式環境）
-cloudflared tunnel route dns <tunnel-name> eclaw-bot.yourdomain.com
+./start-tunnel.sh                          # 預設 ECLAW_TUNNEL_MODE=quick
+# 注意：trycloudflare hostname 不穩，Cloudflare 隨時可能換掉它，
+# 換掉後 EClaw 推不到 webhook，bot 會看似「無視」訊息（已驗證的失敗模式）。
 ```
 
-**ngrok（替代方案）：**
+**正式（穩定 URL，推薦）：**
+```bash
+# 一次性 bootstrap（建 tunnel + DNS，見下方詳解）後：
+ECLAW_TUNNEL_MODE=named \
+  ECLAW_TUNNEL_NAME=<tunnel-uuid> \
+  ECLAW_TUNNEL_CRED_FILE=$HOME/.cloudflared/<tunnel-uuid>.json \
+  ./start-tunnel.sh
+```
+
+**ngrok（替代方案，臨時 URL）：**
 ```bash
 ngrok http 18800
 ```
@@ -166,6 +173,129 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_SELF_CHECK_MIN` | | Self-check 間隔分鐘數 | `30` |
 | `ECLAW_ASK_TTL_MIN` | | PreToolUse /ask 殭屍 GC TTL（用戶沒按按鈕 N 分鐘後自動 deny）| `30` |
 | `ECLAW_PREFER_TRANSFORM_VIA_CHANNEL_KEY` | | **Phase 2**：啟用後改走 `/api/transform` + `X-Channel-Key`（需先完成 channel registration，詳見下方） | `false` |
+
+### `start-tunnel.sh` 專用 env
+
+> 只在你用 `start-tunnel.sh` 啟 tunnel 時才需要。如果你用其他方式（手動 cloudflared、ngrok、自架 reverse proxy），整段忽略。
+
+| 變數 | 必填 | 說明 | 預設值 |
+|------|:----:|------|--------|
+| `ECLAW_TUNNEL_MODE` | | `quick`（隨機 hostname，臨時用）或 `named`（固定 hostname，正式用） | `quick` |
+| `ECLAW_BRIDGE_PORT` | | tunnel 要 expose 的本地 port，多 bot 同機要設不同值 | `18800` |
+| `ECLAW_TUNNEL_NAME` | (named 模式必填) | Cloudflare Named Tunnel 的 UUID 或 friendly name；UUID 不需 `cert.pem` 較適合純 API bootstrap | — |
+| `ECLAW_TUNNEL_CRED_FILE` | (named 模式必填) | tunnel credentials JSON 路徑（`~/.cloudflared/<uuid>.json`）；可被 `ECLAW_TUNNEL_CONFIG` 取代 | — |
+| `ECLAW_TUNNEL_CONFIG` | | cloudflared `config.yml` 路徑；同時設 `ECLAW_TUNNEL_USE_CONFIG_INGRESS=1` 可改用 config 內的 ingress 規則（多 hostname 用） | — |
+| `ECLAW_TUNNEL_USE_CONFIG_INGRESS` | | 設 `1` 時不傳 `--url`，全靠 `ECLAW_TUNNEL_CONFIG` 的 ingress | `0` |
+| `ECLAW_TUNNEL_LOG` | | cloudflared 輸出 log 路徑 | `/tmp/eclaw-tunnel-${ECLAW_BRIDGE_PORT}.log` |
+| `ECLAW_TUNNEL_TMUX_SESSION` | | 跑 cloudflared 的 tmux session 名稱（多 bot 同機要不同） | `eclaw-tunnel-${ECLAW_BRIDGE_PORT}` |
+| `ECLAW_TUNNEL_DRY_RUN` | | 設 `1` 只印出 resolved 命令、不真的啟動（CI / config 驗證用） | `0` |
+
+## Tunnel 管理 (`start-tunnel.sh`)
+
+`start-tunnel.sh` 是一個**獨立**的 helper 腳本（與 `restart-channel.sh` 解耦），統一管理 Cloudflare tunnel 的啟停。任何 EClaw bridge 用戶都可以直接拿來用。
+
+### 快速開始 — Quick mode（5 秒上手，臨時 URL）
+
+不需要 Cloudflare 帳號、不需要 domain：
+
+```bash
+./start-tunnel.sh
+# → 會在 tmux session "eclaw-tunnel-18800" 啟動 cloudflared
+# → URL 會印在 log 裡：tail /tmp/eclaw-tunnel-18800.log
+# → 把 https://xxx.trycloudflare.com 填進 ECLAW_WEBHOOK_URL 重啟 bridge
+```
+
+⚠️ **trycloudflare hostname 不穩**：Cloudflare 隨時可能換掉它（實測過 3 天就會過期），換了之後 EClaw 推不到 webhook，bot 看似「無視訊息」。長期使用請走 Named mode。
+
+### 正式部署 — Named mode（穩定 URL）
+
+#### Bridge naming convention
+
+多 bot 同帳號時，建議用 entity ID 命名統一三軸：
+
+```
+本地 port    Cloudflare tunnel 名稱      公開 hostname
+18800        b2                          b2.your-domain.com    ← entity #2
+18801        b6                          b6.your-domain.com    ← entity #6
+18802        b5                          b5.your-domain.com    ← entity #5
+```
+
+#### Bootstrap（一次性，每條 bridge 各做一次）
+
+需要：Cloudflare 帳號 + 已 delegate NS 給 Cloudflare 的 domain + 一個有 `Account.Cloudflare Tunnel:Edit` + `Zone.DNS:Edit` 權限的 API token。
+
+**選項 A：CLI 互動 bootstrap**（最簡，但需點瀏覽器）
+
+```bash
+cloudflared tunnel login                              # 開瀏覽器選 zone，下載 cert.pem
+cloudflared tunnel create b2                          # 產生 tunnel UUID + credentials JSON
+cloudflared tunnel route dns b2 b2.your-domain.com    # 建 CNAME
+```
+
+**選項 B：純 API bootstrap**（headless，0 互動，適合自動化部署）
+
+```bash
+TOKEN="<your-cloudflare-api-token>"
+ACCOUNT_ID="<your-account-id>"
+ZONE_ID="<your-domain-zone-id>"
+TUNNEL_NAME="b2"
+
+# 1) 建 tunnel
+SECRET=$(openssl rand -base64 32)
+RESP=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/cfd_tunnel" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"name\":\"$TUNNEL_NAME\",\"tunnel_secret\":\"$SECRET\",\"config_src\":\"local\"}")
+UUID=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["id"])')
+TAG=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["account_tag"])')
+
+# 2) 寫 credentials JSON
+mkdir -p ~/.cloudflared
+cat > ~/.cloudflared/${UUID}.json <<EOF
+{"AccountTag":"$TAG","TunnelID":"$UUID","TunnelSecret":"$SECRET"}
+EOF
+chmod 600 ~/.cloudflared/${UUID}.json
+
+# 3) 建 DNS CNAME
+curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"type\":\"CNAME\",\"name\":\"$TUNNEL_NAME\",\"content\":\"${UUID}.cfargotunnel.com\",\"proxied\":true,\"ttl\":1}"
+```
+
+完成後就可以直接：
+
+```bash
+ECLAW_TUNNEL_MODE=named \
+  ECLAW_TUNNEL_NAME=$UUID \
+  ECLAW_TUNNEL_CRED_FILE=$HOME/.cloudflared/${UUID}.json \
+  ECLAW_BRIDGE_PORT=18800 \
+  ./start-tunnel.sh
+```
+
+並把 `ECLAW_WEBHOOK_URL=https://b2.your-domain.com` 寫進 `~/.zshrc`，重啟 bridge 一次（`./restart-channel.sh --bridge-only`）讓 bridge 重新註冊 callback 給 EClaw。
+
+### 多 bot 同機並存
+
+每條 bridge 都有自己的 port + tunnel + tmux session，互不干擾：
+
+```bash
+# Terminal 1 — entity #2
+ECLAW_BRIDGE_PORT=18800 ECLAW_TUNNEL_NAME=$UUID_B2 ECLAW_TUNNEL_CRED_FILE=... ./start-tunnel.sh
+
+# Terminal 2 — entity #6
+ECLAW_BRIDGE_PORT=18801 ECLAW_TUNNEL_NAME=$UUID_B6 ECLAW_TUNNEL_CRED_FILE=... ./start-tunnel.sh
+```
+
+`start-tunnel.sh` 的 idempotent kill 只會清**自家 port + UUID** 的 cloudflared，不會碰其他 bot 的 tunnel。
+
+### 故障排除
+
+| 症狀 | 原因 | 處置 |
+|---|---|---|
+| `cert.pem not found` | 用 friendly name + 沒登入 cloudflared | 改用 UUID + 設 `ECLAW_TUNNEL_CRED_FILE` |
+| 站起來但 EClaw 推不到 | bridge `ECLAW_WEBHOOK_URL` 沒切到 named hostname | 改 `~/.zshrc` 後 `./restart-channel.sh --bridge-only` |
+| `getaddrinfo ENOTFOUND *.trycloudflare.com` | 舊 quick tunnel hostname 過期 | 換 named mode（永久解） |
+| 兩個 cloudflared 同時跑同一 tunnel | 早先用其他方式啟動過 | `./start-tunnel.sh` 會用 UUID + port 雙重 match 殺乾淨 |
+| `--credentials-file path not readable` | path 寫錯或 permissions | `chmod 600 ~/.cloudflared/<uuid>.json` |
 
 ## Channel Registration（Phase 2 可選）
 
