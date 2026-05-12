@@ -22,7 +22,7 @@ import {
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
-import { sendReplyToEClaw } from "./eclaw-sender.ts";
+import { sendReplyToEClaw, type SenderHint } from "./eclaw-sender.ts";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -40,6 +40,12 @@ const PREFER_TRANSFORM_VIA_CHANNEL_KEY = process.env.ECLAW_PREFER_TRANSFORM_VIA_
 let lastDeviceId: string | null = null;
 let lastEntityId: number | null = null;
 let botSecret: string | null = null;
+// Sender routing hint captured from the latest inbound webhook. Passed to
+// sendReplyToEClaw so outbound replies carry an @publicCode (when sender is
+// another bot entity) and a senderHint payload — fixes the bot-to-bot
+// fan-out bug where omitting routing target broadcast-leaked to every
+// entity on the device.
+let lastSenderHint: SenderHint | null = null;
 
 // ── Pending /ask requests (PreToolUse hook long-poll) ──
 interface PendingAsk {
@@ -253,6 +259,7 @@ async function forwardReplyToEClaw(text: string, card?: any) {
     botSecret: botSecret || "",
     text,
     card,
+    senderHint: lastSenderHint,
   });
 
   log(`Reply forwarded to EClaw successfully (${via})`);
@@ -910,6 +917,44 @@ Bun.serve({
         // Update state for reply routing
         if (deviceId) lastDeviceId = deviceId;
         if (entityId !== undefined) lastEntityId = entityId;
+
+        // ── Capture sender routing hint for the outbound reply ──
+        // backend/channel-api.js → pushToChannelCallback includes
+        // fromEntityId / fromPublicCode / isBroadcast on every push. Classify
+        // the inbound source so eclaw-sender can auto-prepend @publicCode
+        // (bot-to-bot) and pass senderHint to /api/transform as a fallback.
+        const fromEntityIdRaw = body.fromEntityId;
+        const fromEntityId =
+          typeof fromEntityIdRaw === "number"
+            ? fromEntityIdRaw
+            : typeof fromEntityIdRaw === "string" && /^\d+$/.test(fromEntityIdRaw)
+              ? parseInt(fromEntityIdRaw, 10)
+              : undefined;
+        const fromPublicCode =
+          typeof body.fromPublicCode === "string" && body.fromPublicCode.length > 0
+            ? body.fromPublicCode
+            : null;
+        const isBroadcast = !!body.isBroadcast;
+        let hintKind: SenderHint["kind"];
+        if (isBroadcast) {
+          hintKind = "broadcast";
+        } else if (
+          from === "web_chat" ||
+          from === "client" ||
+          from === "user" ||
+          from === "client/speak"
+        ) {
+          hintKind = "user";
+        } else if (fromEntityId !== undefined || fromPublicCode) {
+          hintKind = "entity";
+        } else {
+          hintKind = "unknown";
+        }
+        lastSenderHint = {
+          kind: hintKind,
+          entityId: fromEntityId,
+          publicCode: fromPublicCode,
+        };
 
         // ── Auto-detect language from user message ──
         setLocale(detectLanguage(text));

@@ -7,6 +7,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import {
+  applyOutboundMention,
   buildChannelMessageRequest,
   buildTransformRequest,
   sendReplyToEClaw,
@@ -132,5 +133,152 @@ describe("sendReplyToEClaw — error handling", () => {
     await expect(
       sendReplyToEClaw({ ...BASE_OPTS, preferTransformViaChannelKey: false }),
     ).rejects.toThrow("HTTP 400");
+  });
+});
+
+// ── applyOutboundMention — auto-prepend behavior ─────────────────────────────
+
+describe("applyOutboundMention", () => {
+  test("prepends @publicCode when sender is another entity and text has no leading mention", () => {
+    const out = applyOutboundMention("hello sender", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("@wjkzxz hello sender");
+  });
+
+  test("leaves text untouched when it already leads with @publicCode", () => {
+    const out = applyOutboundMention("@wjkzxz already routed", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("@wjkzxz already routed");
+  });
+
+  test("leaves text untouched when it already leads with @#N", () => {
+    const out = applyOutboundMention("@#1 already routed", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("@#1 already routed");
+  });
+
+  test("leaves text untouched when it already leads with @all", () => {
+    const out = applyOutboundMention("@all heads up", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("@all heads up");
+  });
+
+  test("does not prepend when sender kind is user", () => {
+    const out = applyOutboundMention("regular reply", {
+      kind: "user",
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("regular reply");
+  });
+
+  test("does not prepend when sender kind is broadcast", () => {
+    const out = applyOutboundMention("regular reply", {
+      kind: "broadcast",
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("regular reply");
+  });
+
+  test("does not prepend when sender kind is unknown", () => {
+    const out = applyOutboundMention("regular reply", {
+      kind: "unknown",
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("regular reply");
+  });
+
+  test("does not prepend when publicCode is missing", () => {
+    const out = applyOutboundMention("regular reply", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: null,
+    });
+    expect(out).toBe("regular reply");
+  });
+
+  test("does not prepend when hint is null", () => {
+    expect(applyOutboundMention("regular reply", null)).toBe("regular reply");
+    expect(applyOutboundMention("regular reply", undefined)).toBe("regular reply");
+  });
+
+  test("idempotent: applying twice does not double-prepend", () => {
+    const hint = { kind: "entity" as const, entityId: 1, publicCode: "wjkzxz" };
+    const first = applyOutboundMention("hello", hint);
+    const second = applyOutboundMention(first, hint);
+    expect(second).toBe("@wjkzxz hello");
+  });
+
+  test("tolerates leading whitespace before @-mention check", () => {
+    const out = applyOutboundMention("   @wjkzxz spaced", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("   @wjkzxz spaced");
+  });
+});
+
+// ── senderHint pass-through into request payloads ────────────────────────────
+
+describe("senderHint pass-through", () => {
+  test("buildTransformRequest auto-prepends @publicCode AND adds senderHint to payload", () => {
+    const req = buildTransformRequest({
+      ...BASE_OPTS,
+      text: "thanks for the review",
+      senderHint: { kind: "entity", entityId: 1, publicCode: "wjkzxz" },
+    });
+    const body = JSON.parse(req.body);
+    expect(body.message).toBe("@wjkzxz thanks for the review");
+    expect(body.senderHint).toEqual({ kind: "entity", entityId: 1, publicCode: "wjkzxz" });
+  });
+
+  test("buildChannelMessageRequest auto-prepends @publicCode AND adds senderHint to payload", () => {
+    const req = buildChannelMessageRequest({
+      ...BASE_OPTS,
+      text: "thanks for the review",
+      senderHint: { kind: "entity", entityId: 1, publicCode: "wjkzxz" },
+    });
+    const body = JSON.parse(req.body);
+    expect(body.message).toBe("@wjkzxz thanks for the review");
+    expect(body.senderHint).toEqual({ kind: "entity", entityId: 1, publicCode: "wjkzxz" });
+  });
+
+  test("does not double-prepend if outbound text already leads with @publicCode", () => {
+    const req = buildTransformRequest({
+      ...BASE_OPTS,
+      text: "@wjkzxz pre-routed",
+      senderHint: { kind: "entity", entityId: 1, publicCode: "wjkzxz" },
+    });
+    const body = JSON.parse(req.body);
+    expect(body.message).toBe("@wjkzxz pre-routed");
+  });
+
+  test("omits senderHint payload key when hint is null", () => {
+    const req = buildTransformRequest({ ...BASE_OPTS, text: "x", senderHint: null });
+    const body = JSON.parse(req.body);
+    expect("senderHint" in body).toBe(false);
+  });
+
+  test("user-kind hint passes through without auto-prepend", () => {
+    const req = buildChannelMessageRequest({
+      ...BASE_OPTS,
+      text: "hi user",
+      senderHint: { kind: "user", publicCode: "wjkzxz" },
+    });
+    const body = JSON.parse(req.body);
+    expect(body.message).toBe("hi user");
+    expect(body.senderHint).toEqual({ kind: "user", publicCode: "wjkzxz" });
   });
 });
