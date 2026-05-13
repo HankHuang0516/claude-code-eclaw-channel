@@ -61,6 +61,28 @@ export function classifyTmuxScreen(
     return "busy";
 }
 
+/**
+ * Detects the github-computer MCP permission dialog, which has a required
+ * "Allow access for this session?" dropdown that must be filled before the
+ * Accept button can be pressed.
+ *
+ * For this dialog, `resolve_stuck_prompt` must send Escape (graceful cancel)
+ * rather than Down+Enter, because:
+ *  1. Down+Enter navigates to "Decline" (2nd option in the horizontal menu)
+ *     and tries to confirm — but the required field is unset, so the dialog
+ *     shows "This field is required" and stays open.
+ *  2. This causes an infinite decline-loop: bot retries upload → dialog →
+ *     auto-wake declines → dialog again → repeat until 300s giveup.
+ *
+ * Escape lets the bot handle the cancellation gracefully and report back to
+ * the user instead of spinning indefinitely.
+ *
+ * // 2026-05-14 fix: detected by 6h self-healthcheck auto-wake loop
+ */
+export function isMcpPermissionDialog(screen: string): boolean {
+    return screen.includes("Allow access for this session");
+}
+
 export type AutoWakeAction =
     | { type: "bail"; reason: "hook_pending" | "crashed" }
     | { type: "resolve_stuck_prompt" }

@@ -19,6 +19,7 @@ import {
   classifyTmuxScreen,
   decideAutoWakeTickAction,
   decideReplyEnforcerAction,
+  isMcpPermissionDialog,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -390,9 +391,23 @@ function scheduleAutoWake() {
       // bypass. Auto-resolve: send Down+Enter to pick "Yes, and
       // always allow" (2nd option, more permissive than Yes), then
       // keep polling.
+      //
+      // Exception — github-computer MCP permission dialog:
+      // That dialog has a required "Allow access for this session?"
+      // dropdown (not set by default). Down+Enter navigates to
+      // "Decline" and then fails with "This field is required",
+      // causing an infinite decline-loop until the 300s giveup.
+      // Send Escape instead: cancels gracefully, bot reports failure,
+      // no loop. (2026-05-14 fix — detected by 6h health check)
       try {
         const { execSync } = await import("node:child_process");
-        execSync("tmux send-keys -t eclaw-bot Down Enter", { timeout: 3000 });
+        const screen = execSync("tmux capture-pane -t eclaw-bot -p", { timeout: 3000 }).toString();
+        if (isMcpPermissionDialog(screen)) {
+          log(`Auto-wake tick@${pollAge}s: MCP permission dialog — sending Escape to cancel gracefully`);
+          execSync("tmux send-keys -t eclaw-bot Escape", { timeout: 3000 });
+        } else {
+          execSync("tmux send-keys -t eclaw-bot Down Enter", { timeout: 3000 });
+        }
       } catch (err: any) {
         log(`Auto-wake tick@${pollAge}s: stuck_prompt auto-resolve failed: ${err.message}`);
       }
