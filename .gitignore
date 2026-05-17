@@ -8,3 +8,4 @@ bun.lock
 .mcp.json
 TOOLS.local.md
 *.local.md
+.playwright-mcp/
