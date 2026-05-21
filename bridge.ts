@@ -661,6 +661,7 @@ async function registerWithEClaw(isSelfCheck = false) {
         body: JSON.stringify({
           channel_api_key: API_KEY,
           deviceId: data.deviceId,
+          name: process.env.ECLAW_BOT_NAME || "Claude Bot",
           botName: process.env.ECLAW_BOT_NAME || "Claude Bot",
           ...(CONFIGURED_ENTITY_ID !== null ? { entityId: CONFIGURED_ENTITY_ID } : {}),
         }),

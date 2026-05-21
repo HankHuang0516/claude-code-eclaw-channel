@@ -292,6 +292,7 @@ async function registerWithEClaw(webhookUrl: string): Promise<void> {
       body: JSON.stringify({
         channel_api_key: API_KEY,
         deviceId: data.deviceId,
+        name: BOT_NAME,
         botName: BOT_NAME,
         ...(TARGET_ENTITY_ID !== null ? { entityId: TARGET_ENTITY_ID } : {}),
       }),

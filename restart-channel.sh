@@ -12,6 +12,25 @@ CHANNEL_DIR="$(cd "$(dirname "$0")" && pwd)"
 BRIDGE_TMUX_SESSION="eclaw-bridge"
 MAX_WAIT=45   # seconds to wait for fakechat to come back
 
+load_channel_env() {
+  if [ -f "$CHANNEL_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$CHANNEL_DIR/.env"
+    set +a
+  fi
+
+  if [ -f "$CHANNEL_DIR/TOOLS.local.md" ]; then
+    while IFS= read -r line; do
+      eval "$line"
+    done < <(grep '^export ' "$CHANNEL_DIR/TOOLS.local.md" || true)
+  fi
+
+  export ECLAW_WEBHOOK_URL="${ECLAW_WEBHOOK_URL:-https://b2.eclawbot.com}"
+  export ECLAW_BOT_NAME="${ECLAW_BOT_NAME:-Mac_ClaudeAce主管}"
+  export ECLAW_ENTITY_ID="${ECLAW_ENTITY_ID:-2}"
+}
+
 # Claude Code launch command
 CLAUDE_BIN="claude"
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-20250514}"
@@ -35,10 +54,25 @@ check_tmux_session() {
   tmux has-session -t "$1" 2>/dev/null
 }
 
+check_fakechat_process() {
+  local pid
+  pid="$(lsof -iTCP:8787 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [ -z "$pid" ]; then
+    return 1
+  fi
+  ps -p "$pid" -ww -o command= 2>/dev/null | grep -Eq 'bun( |.*/)?server\.ts'
+}
+
 # ── Mode: --smart (default), --force, --bridge-only ──
 MODE="${1:---smart}"
 
+load_channel_env
 log "restart-channel.sh invoked with mode=$MODE"
+if [ -z "${ECLAW_API_KEY:-}" ]; then
+  log "ERROR: ECLAW_API_KEY is not set; create $CHANNEL_DIR/.env or export it before restart"
+  json_out "false" "missing_env" "ECLAW_API_KEY is not set"
+  exit 1
+fi
 
 # ── Smart restart ──
 case "$MODE" in
@@ -56,7 +90,7 @@ case "$MODE" in
       tmux new-session -d -s "$BRIDGE_TMUX_SESSION" -c "$CHANNEL_DIR"
     fi
     tmux send-keys -t "$BRIDGE_TMUX_SESSION" \
-      "cd $CHANNEL_DIR && ECLAW_API_KEY=\$ECLAW_API_KEY ECLAW_WEBHOOK_URL=\$ECLAW_WEBHOOK_URL ECLAW_BOT_NAME=\$ECLAW_BOT_NAME ECLAW_ENTITY_ID=\$ECLAW_ENTITY_ID bun bridge.ts" Enter
+      "cd $CHANNEL_DIR && set -a; [ -f .env ] && . ./.env; set +a; bun bridge.ts" Enter
     sleep 3
     json_out "true" "bridge_restarted" "Bridge process restarted"
     exit 0
@@ -149,7 +183,7 @@ while [ $WAITED -lt $MAX_WAIT ]; do
   WAITED=$((WAITED + 3))
   if check_fakechat; then
     # Also check that a fakechat bun process exists (started by new Claude Code)
-    if pgrep -f "bun.*fakechat.*server\.ts" >/dev/null; then
+    if check_fakechat_process; then
       log "fakechat is back online after ${WAITED}s (HTTP OK + bun process up)"
       json_out "true" "restarted" "Claude Code restarted successfully in ${WAITED}s"
       exit 0
