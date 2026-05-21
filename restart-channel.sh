@@ -56,7 +56,7 @@ case "$MODE" in
       tmux new-session -d -s "$BRIDGE_TMUX_SESSION" -c "$CHANNEL_DIR"
     fi
     tmux send-keys -t "$BRIDGE_TMUX_SESSION" \
-      "cd $CHANNEL_DIR && ECLAW_API_KEY=\$ECLAW_API_KEY ECLAW_WEBHOOK_URL=\$ECLAW_WEBHOOK_URL ECLAW_BOT_NAME=\$ECLAW_BOT_NAME bun bridge.ts" Enter
+      "cd $CHANNEL_DIR && ECLAW_API_KEY=\$ECLAW_API_KEY ECLAW_WEBHOOK_URL=\$ECLAW_WEBHOOK_URL ECLAW_BOT_NAME=\$ECLAW_BOT_NAME ECLAW_ENTITY_ID=\$ECLAW_ENTITY_ID bun bridge.ts" Enter
     sleep 3
     json_out "true" "bridge_restarted" "Bridge process restarted"
     exit 0

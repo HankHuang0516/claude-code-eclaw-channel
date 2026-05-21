@@ -35,6 +35,12 @@ const API_KEY = process.env.ECLAW_API_KEY || "";
 const API_BASE = (process.env.ECLAW_API_BASE || "https://eclawbot.com").replace(/\/$/, "");
 // Phase 2: channel key path via /api/transform. Default false = legacy path.
 const PREFER_TRANSFORM_VIA_CHANNEL_KEY = process.env.ECLAW_PREFER_TRANSFORM_VIA_CHANNEL_KEY === "true";
+const CONFIGURED_ENTITY_ID = (() => {
+  const raw = process.env.ECLAW_ENTITY_ID;
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+})();
 
 // Track deviceId/entityId from incoming messages for reply routing
 let lastDeviceId: string | null = null;
@@ -602,18 +608,26 @@ async function registerWithEClaw(isSelfCheck = false) {
 
     const data: any = await resp.json();
     const prevBound = lastEntityId !== null;
-    const stillBoundAsEntity = (data.entities || []).find(
+    const boundEntities = (data.entities || []).filter(
       (e: any) => e.boundToThisAccount === true,
     );
+    const stillBoundAsEntity =
+      CONFIGURED_ENTITY_ID !== null
+        ? boundEntities.find((e: any) => e.entityId === CONFIGURED_ENTITY_ID)
+        : boundEntities[0];
+    const boundElsewhere =
+      CONFIGURED_ENTITY_ID !== null
+        ? boundEntities.find((e: any) => e.entityId !== CONFIGURED_ENTITY_ID)
+        : null;
 
     // On self-check, only log if state changed or bind is missing
     if (isSelfCheck) {
       lastSelfCheckAt = Date.now();
       if (!stillBoundAsEntity) {
         lastSelfCheckOk = false;
-        log(
-          `⚠️ Self-check: this API key is no longer bound to any entity! Re-binding...`,
-        );
+        const targetHint = CONFIGURED_ENTITY_ID !== null ? ` target entity ${CONFIGURED_ENTITY_ID}` : " any entity";
+        const driftHint = boundElsewhere ? ` (currently also bound to entity ${boundElsewhere.entityId})` : "";
+        log(`⚠️ Self-check: this API key is not bound to${targetHint}${driftHint}. Re-binding...`);
       } else if (prevBound && stillBoundAsEntity.entityId !== lastEntityId) {
         lastSelfCheckOk = false;
         log(
@@ -633,6 +647,14 @@ async function registerWithEClaw(isSelfCheck = false) {
     // Only re-bind on startup OR if self-check detected a missing/changed binding
     const needBind = !isSelfCheck || !stillBoundAsEntity || stillBoundAsEntity.entityId !== lastEntityId;
     if (needBind) {
+      if (CONFIGURED_ENTITY_ID !== null && !stillBoundAsEntity && boundElsewhere) {
+        log(
+          `EClaw API key is bound to entity ${boundElsewhere.entityId}, expected ${CONFIGURED_ENTITY_ID}; refusing automatic bind to avoid duplicate callbacks. Unbind the wrong slot first.`,
+        );
+        if (isSelfCheck) lastSelfCheckOk = false;
+        return;
+      }
+
       const bindResp = await fetch(`${API_BASE}/api/channel/bind`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -640,11 +662,17 @@ async function registerWithEClaw(isSelfCheck = false) {
           channel_api_key: API_KEY,
           deviceId: data.deviceId,
           botName: process.env.ECLAW_BOT_NAME || "Claude Bot",
+          ...(CONFIGURED_ENTITY_ID !== null ? { entityId: CONFIGURED_ENTITY_ID } : {}),
         }),
       });
 
       if (bindResp.ok) {
         const bindData: any = await bindResp.json();
+        if (CONFIGURED_ENTITY_ID !== null && bindData.entityId !== CONFIGURED_ENTITY_ID) {
+          log(`EClaw bind returned entity ${bindData.entityId}, expected ${CONFIGURED_ENTITY_ID}; refusing to update local route`);
+          if (isSelfCheck) lastSelfCheckOk = false;
+          return;
+        }
         lastEntityId = bindData.entityId;
         botSecret = bindData.botSecret;
         if (isSelfCheck) {

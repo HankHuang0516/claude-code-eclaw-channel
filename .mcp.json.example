@@ -8,7 +8,8 @@
         "ECLAW_API_BASE": "https://eclawbot.com",
         "ECLAW_WEBHOOK_PORT": "18800",
         "ECLAW_WEBHOOK_URL": "https://your-public-url.example.com",
-        "ECLAW_BOT_NAME": "My_Bot"
+        "ECLAW_BOT_NAME": "My_Bot",
+        "ECLAW_ENTITY_ID": "2"
       }
     }
   }

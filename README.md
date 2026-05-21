@@ -151,6 +151,7 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_API_BASE` | | EClaw API 基底 URL | `https://eclawbot.com` |
 | `ECLAW_WEBHOOK_PORT` | | Webhook 監聽 port | `18800` |
 | `ECLAW_BOT_NAME` | | Bot 顯示名稱 | `Claude Bot` |
+| `ECLAW_ENTITY_ID` | | 固定綁定的 EClaw entity slot；設定後 self-check 只會重新綁定到該 slot，不會落到第一個空位 | — |
 | `FAKECHAT_WS` | | Fakechat WebSocket URL（bridge 模式用） | `ws://localhost:8787/ws` |
 | `ECLAW_WATCHDOG_TIMEOUT` | | Watchdog 超時秒數 | `30` |
 | `ECLAW_WATCHDOG_ENABLED` | | 是否啟用看門狗機制 | `true` |

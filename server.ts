@@ -36,6 +36,12 @@ const API_BASE = (process.env.ECLAW_API_BASE || "https://eclawbot.com").replace(
 );
 const WEBHOOK_PORT = parseInt(process.env.ECLAW_WEBHOOK_PORT || "18800", 10);
 const BOT_NAME = process.env.ECLAW_BOT_NAME || "Claude Bot";
+const TARGET_ENTITY_ID = (() => {
+  const raw = process.env.ECLAW_ENTITY_ID;
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+})();
 
 // ── State ──
 // Store credentials from EClaw registration / bind
@@ -260,6 +266,25 @@ async function registerWithEClaw(webhookUrl: string): Promise<void> {
       `[EClaw] Registered. Device: ${data.deviceId}, Entities: ${data.entities?.length || 0}`
     );
 
+    const boundEntities = (data.entities || []).filter(
+      (e: any) => e.boundToThisAccount === true
+    );
+    const boundAtTarget =
+      TARGET_ENTITY_ID !== null
+        ? boundEntities.find((e: any) => e.entityId === TARGET_ENTITY_ID)
+        : null;
+    const boundElsewhere =
+      TARGET_ENTITY_ID !== null
+        ? boundEntities.find((e: any) => e.entityId !== TARGET_ENTITY_ID)
+        : null;
+
+    if (TARGET_ENTITY_ID !== null && !boundAtTarget && boundElsewhere) {
+      console.error(
+        `[EClaw] API key is bound to entity ${boundElsewhere.entityId}, expected ${TARGET_ENTITY_ID}; refusing automatic bind to avoid duplicate callbacks`
+      );
+      return;
+    }
+
     // Bind entity
     const bindResp = await fetch(`${API_BASE}/api/channel/bind`, {
       method: "POST",
@@ -268,11 +293,18 @@ async function registerWithEClaw(webhookUrl: string): Promise<void> {
         channel_api_key: API_KEY,
         deviceId: data.deviceId,
         botName: BOT_NAME,
+        ...(TARGET_ENTITY_ID !== null ? { entityId: TARGET_ENTITY_ID } : {}),
       }),
     });
 
     if (bindResp.ok) {
       const bindData: any = await bindResp.json();
+      if (TARGET_ENTITY_ID !== null && bindData.entityId !== TARGET_ENTITY_ID) {
+        console.error(
+          `[EClaw] Bind returned entity ${bindData.entityId}, expected ${TARGET_ENTITY_ID}; refusing local registration`
+        );
+        return;
+      }
       registeredEntityId = bindData.entityId;
       if (bindData.botSecret) callbackToken = bindData.botSecret;
       console.error(
