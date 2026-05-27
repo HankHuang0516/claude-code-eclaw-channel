@@ -20,6 +20,7 @@ import {
   decideAutoWakeTickAction,
   decideReplyEnforcerAction,
   isMcpPermissionDialog,
+  isSelfBroadcastLoopback,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -1116,9 +1117,18 @@ Bun.serve({
         // needs time to process. The watchdog fires when the SECOND message
         // piles up, meaning the user is waiting and Claude is still busy.
         // Kanban/entity:0 auto-messages are EXCLUDED even if forwarded,
-        // because they don't represent a waiting user (2026-04-21 fix). ──
+        // because they don't represent a waiting user (2026-04-21 fix).
+        //
+        // Self-broadcast loopbacks (self-healthcheck cron, pong echoes,
+        // bridge-error echoes) also EXCLUDED — they round-trip as
+        // from='client' but aren't waiting humans (2026-05-28 fix,
+        // card_505e8c98f). ──
         const isHumanMessage = from === "web_chat" || from === "client" || from === "user";
-        if (isHumanMessage) {
+        const isSelfLoopback = isHumanMessage && isSelfBroadcastLoopback(text);
+        if (isSelfLoopback) {
+          log(`Self-broadcast loopback suppressed for enforcer: "${text.slice(0, 60).replace(/\n/g, " ")}"`);
+        }
+        if (isHumanMessage && !isSelfLoopback) {
           // Reply-tool enforcer: track timestamp of latest human message
           lastHumanMsgTimestamp = Date.now();
           if (!watchdogFirstMsg) {
