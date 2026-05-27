@@ -110,6 +110,76 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
     return { type: "nudge" };
 }
 
+/**
+ * Detects bot-to-bot noop ack messages (「了解。」/「收到」/「OK」/...) that
+ * shouldn't trigger the auto-wake nudge.
+ *
+ * 2026-05-27 incident, card_505e8c98f: #5 (Hermes) and #6 (Codex)
+ * entered a mutual ack-of-ack reply loop after a Platform-P1 review
+ * dispatch. Each received the other's 「了解。」/「收到」 via FWD; the
+ * bridge auto-wake nudged the receiver with "Immediately use the reply
+ * tool" → which sent another ack → which arrived as a new inbound →
+ * which fired auto-wake again. ~15+ identical messages in 2 minutes
+ * before commander session manually broke the loop.
+ *
+ * Bot-to-bot noop acks carry no "user is waiting for reply" semantics,
+ * so suppressing the auto-wake breaks the loop without dropping useful
+ * inbound. Real bot-to-bot work (review reports, status updates with
+ * actionable verbs, @-mentions) is NOT classified as a noop ack.
+ *
+ * Pattern is intentionally conservative: ≤30-char trimmed text, no
+ * @-mention routing token, and matches a small fixed set of pure-ack
+ * tokens across the locales we use.
+ */
+export function isNoopAck(text: string): boolean {
+    if (!text) return false;
+    const t = text.trim();
+    if (t.length === 0) return false;
+    if (/@(?:#?[A-Za-z0-9]+|all)/.test(t)) return false;
+    // Explicit `[SILENT ...]` marker — bypasses the length cap because
+    // the syntax itself is unambiguous and the body often carries human
+    // context ("kanban echo of own card move").
+    if (/^\[SILENT[^\]]*\]$/i.test(t)) return true;
+    // Everything else falls under a tight length cap: real ack-only
+    // messages are always short. A 30-char trimmed-text limit keeps the
+    // regex set from accidentally swallowing a status update that
+    // happens to start with 「了解。」.
+    if (t.length > 30) return false;
+    const ACK_PATTERNS = [
+        /^了解[。!.！]?$/,
+        /^收到[。!.！]?$/,
+        /^好的?[。!.！]?$/,
+        /^OK[。!.！]?$/i,
+        /^ACK\.?$/i,
+        /^received\.?$/i,
+        /^thanks?\.?$/i,
+        /^承知(?:しました)?[。!.！]?$/,
+        /^かしこまりました[。!.！]?$/,
+    ];
+    return ACK_PATTERNS.some((p) => p.test(t));
+}
+
+/**
+ * Sender-hint kind classified by the webhook handler from
+ * fromEntityId / fromPublicCode / isBroadcast on the inbound payload.
+ * Matches the SenderHint["kind"] union in eclaw-sender.ts.
+ */
+export type SenderHintKind = "entity" | "user" | "broadcast" | "unknown";
+
+/**
+ * Combined predicate: is this inbound a noop bot-to-bot ack that
+ * shouldn't fire the auto-wake nudge? The webhook handler classifies
+ * the sender; this helper merges that classification with the
+ * text-based ack check so the gate is one call at the seam.
+ */
+export function isNoopBotToBotAck(
+    text: string,
+    senderHintKind: SenderHintKind | undefined,
+): boolean {
+    if (senderHintKind !== "entity") return false;
+    return isNoopAck(text);
+}
+
 export type EnforcerAction =
     | { type: "skip"; reason: "fresh" | "cooldown" | "no_human_msg" | "hook_pending" | "crashed" }
     | { type: "trigger_auto_wake_only" }
