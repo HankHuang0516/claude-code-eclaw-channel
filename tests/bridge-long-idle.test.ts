@@ -22,6 +22,7 @@ import {
     classifyTmuxScreen,
     decideAutoWakeTickAction,
     decideReplyEnforcerAction,
+    isSelfBroadcastLoopback,
     type TmuxState,
 } from "../bridge-state.ts";
 
@@ -288,5 +289,66 @@ describe("long-idle stuck_prompt recovery chain (bug 7 end-to-end)", () => {
             "wait",
             "nudge",
         ]);
+    });
+});
+
+// ── 5. Self-broadcast loopback suppression (card_505e8c98f, 2026-05-28).
+//    Auto-nag was firing when the bot's own self-healthcheck cron
+//    broadcast round-tripped as from='client'. These tests pin the
+//    pattern set so future broadcast templates don't accidentally re-arm
+//    the enforcer.
+
+describe("isSelfBroadcastLoopback", () => {
+    test("self-healthcheck cron broadcasts are loopbacks", () => {
+        expect(
+            isSelfBroadcastLoopback(
+                "6h self-healthcheck — healthy: bridge up 4d05h, tunnel b2.eclawbot.com 200, ws=True"
+            )
+        ).toBe(true);
+        expect(
+            isSelfBroadcastLoopback("12h self-healthcheck — degraded: tunnel 502")
+        ).toBe(true);
+        // Case-insensitive — locale variants
+        expect(isSelfBroadcastLoopback("SELF-HEALTHCHECK")).toBe(true);
+    });
+
+    test("plain pong echoes are loopbacks", () => {
+        expect(isSelfBroadcastLoopback("pong-HEALTH_1779899167")).toBe(true);
+        expect(isSelfBroadcastLoopback("pong-ABC_123.")).toBe(true);
+    });
+
+    test("bridge error echoes are loopbacks", () => {
+        expect(
+            isSelfBroadcastLoopback(
+                "[BRIDGE ERROR] ⚠️ You haven't called reply tool for 3 minutes"
+            )
+        ).toBe(true);
+    });
+
+    test("real human healthcheck pings are NOT loopbacks", () => {
+        // Hank/operator probes (no 'self-' prefix) must still trigger
+        // the enforcer — these are real pings expecting a pong reply.
+        expect(isSelfBroadcastLoopback("healthcheck HEALTH_1779899167")).toBe(false);
+        expect(
+            isSelfBroadcastLoopback(
+                "healthcheck HEALTH_XYZ — please reply with 'pong-HEALTH_XYZ' only"
+            )
+        ).toBe(false);
+    });
+
+    test("normal user messages are NOT loopbacks", () => {
+        expect(isSelfBroadcastLoopback("hi can you check the kanban?")).toBe(false);
+        expect(isSelfBroadcastLoopback("")).toBe(false);
+        expect(
+            isSelfBroadcastLoopback("PR review for #2946 please")
+        ).toBe(false);
+    });
+
+    test("messages mentioning 'pong-' mid-text are NOT loopbacks", () => {
+        // Only plain pong echoes (whole-message) qualify; substrings
+        // inside larger messages must pass through to the enforcer.
+        expect(
+            isSelfBroadcastLoopback("I just sent pong-HEALTH_XYZ to confirm")
+        ).toBe(false);
     });
 });

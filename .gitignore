@@ -9,3 +9,12 @@ bun.lock
 TOOLS.local.md
 *.local.md
 .playwright-mcp/
+
+# Backup and temporary JSON files
+*-backup.json
+*-clean.json
+*-fixed.json
+isolated-auth-check.json
+
+# Temporary screenshots (keep documentation screenshots tracked)
+# Use specific naming for tracked docs, ignore general test artifacts

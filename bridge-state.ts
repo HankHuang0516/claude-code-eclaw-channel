@@ -110,6 +110,43 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
     return { type: "nudge" };
 }
 
+/**
+ * Detect self-status broadcasts that loop back through the channel as
+ * `from='client'` and would otherwise wake the reply enforcer despite
+ * being noise the bot itself generated.
+ *
+ * Concrete loop observed (2026-05-28, card_505e8c98f):
+ *   1. Hank sends `healthcheck HEALTH_XYZ` → bot replies `pong-HEALTH_XYZ`
+ *      → enforcer cleared.
+ *   2. Long background task starts.
+ *   3. The same bot's 6h-self-healthcheck cron posts a `[EClaw from
+ *      client] 6h self-healthcheck — healthy:…` status broadcast.
+ *   4. That broadcast round-trips through EClaw and re-enters bridge as
+ *      `from='client'` (broadcast pushes use client semantics).
+ *   5. lastHumanMsgTimestamp gets re-armed → 2 min later the enforcer
+ *      nags `[BRIDGE ERROR] ⚠️ You haven't called reply tool…`.
+ *   6. The bot, mid-task, "acks" — which round-trips again — repeat.
+ *
+ * Conservative pattern set: only the bot's own well-known recurring
+ * status broadcasts. Real human pings (`healthcheck …` without the
+ * self-broadcast prefix, plain user messages) still trigger the
+ * enforcer normally.
+ */
+export function isSelfBroadcastLoopback(text: string): boolean {
+    if (!text) return false;
+    const t = text.trim();
+    // Self-healthcheck cron broadcasts (TW + EN variants).
+    if (/\bself-healthcheck\b/i.test(t)) return true;
+    // Pure pong echo that somehow looped back (defensive — pongs are
+    // outbound replies so this shouldn't happen, but bridge state
+    // poisoning has been observed).
+    if (/^pong-[A-Z0-9_]+\.?$/.test(t)) return true;
+    // Bridge error/auto-nag text echoed back to us (e.g. if the bot
+    // forwarded the reminder string into its own reply).
+    if (t.startsWith("[BRIDGE ERROR]")) return true;
+    return false;
+}
+
 export type EnforcerAction =
     | { type: "skip"; reason: "fresh" | "cooldown" | "no_human_msg" | "hook_pending" | "crashed" }
     | { type: "trigger_auto_wake_only" }
