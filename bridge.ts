@@ -20,6 +20,7 @@ import {
   decideAutoWakeTickAction,
   decideReplyEnforcerAction,
   isMcpPermissionDialog,
+  isNoopBotToBotAck,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -1105,9 +1106,25 @@ Bun.serve({
 
         // Auto-wake: after forwarding, check if Claude is idle and
         // needs a nudge. MCP notifications alone don't trigger turns.
+        //
+        // Suppress for noop bot-to-bot acks (「了解」/「收到」/「OK」/...) —
+        // they carry no "user is waiting for reply" semantics. The nudge
+        // text itself ("Immediately use the reply tool") causes the
+        // recipient to send another ack, which arrives as a new inbound
+        // and fires auto-wake again → mutual ack-of-ack loop between two
+        // channel-mode entities (2026-05-27 incident, card_505e8c98f:
+        // #5 Hermes ↔ #6 Codex, 15+ identical messages in 2 min).
         if (forwardOk) {
-          lastPendingChannelMsg = fullText;
-          scheduleAutoWake();
+          if (isNoopBotToBotAck(text, hintKind)) {
+            log(
+              `Auto-wake suppressed: noop bot-to-bot ack from ${from}: "${text
+                .trim()
+                .slice(0, 60)}"`,
+            );
+          } else {
+            lastPendingChannelMsg = fullText;
+            scheduleAutoWake();
+          }
         }
 
         // ── Watchdog: only trigger when a NEW human message arrives while
