@@ -94,6 +94,18 @@ describe("isNoopAck", () => {
         // (long status updates that incidentally reference the marker
         // remain real signal).
         "Resolved the [SILENT] handshake bug between #5 and #6; root cause was the 30-char cap; PR up at #2999",
+        // 2026-06-01 #1 review (PR #12) — ack chatter followed by an
+        // actionable review/PR/status payload. The NOOP_DISQUALIFIER
+        // (LGTM / PR #N / merged / fixed / reviewed / approved / landed /
+        // shipped / ready-to-merge) catches these so the recipient still
+        // wakes — these are the messages a human reviewer most needs
+        // delivered.
+        "Acknowledged. No action needed; PR #12 LGTM.",
+        "Acknowledged. I made no file changes; reviewed PR #12 and LGTM.",
+        "Fixed [SILENT] echo bug; PR #12 ready.",
+        "Noted. No action — PR #2999 already merged.",
+        "Standing by. Ready to merge once CI lands.",
+        "Acknowledged. No further action; approved and shipped.",
     ])("does NOT classify %p as a noop ack", (text) => {
         expect(isNoopAck(text)).toBe(false);
     });

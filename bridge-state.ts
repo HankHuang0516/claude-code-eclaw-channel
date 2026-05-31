@@ -127,15 +127,20 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
  * inbound. Real bot-to-bot work (review reports, status updates with
  * actionable verbs, @-mentions) is NOT classified as a noop ack.
  *
- * Pattern is intentionally conservative. Three layered checks:
+ * Pattern is intentionally conservative. Three layered checks, each
+ * gated by a real-payload disqualifier (LGTM / PR #N / merged / fixed /
+ * reviewed / approved / landed / shipped / ready-to-merge) so that ack
+ * chatter wrapping a review verdict doesn't get suppressed:
  *   (1) `[SILENT]` marker (whole-string or embedded) — takes precedence
  *       over the @-mention guard so quoted echoes like "Received `@#6
- *       [SILENT]`. No action..." still suppress. Capped at 100 chars.
+ *       [SILENT]`. No action..." still suppress. Capped at 100 chars,
+ *       blocked by disqualifier ("Fixed [SILENT] echo bug; PR #12 ready"
+ *       must wake the recipient).
  *   (2) Verbose channel-mode chatter — opener (Acknowledged/Noted/
  *       Understood/Roger/Standing by-down) + noop continuation (no
  *       action / for your-the next / made no changes / etc). Both
- *       required, so "Standing by for #1's signoff" stays out. Capped
- *       at 100 chars.
+ *       required + disqualifier-blocked, so "Acknowledged. No action
+ *       needed; PR #12 LGTM." stays out.
  *   (3) Short pure-ack tokens (「了解。」/「OK」/「ACK」/Acknowledged./...)
  *       — ≤30-char trimmed text.
  *
@@ -147,13 +152,28 @@ export function isNoopAck(text: string): boolean {
     const t = text.trim();
     if (t.length === 0) return false;
 
+    // Real-payload disqualifier — even when ack chatter matches below,
+    // these sentinels signal a review/PR/status payload that must NOT
+    // be suppressed. 2026-06-01 #1 review found the first-cut widening
+    // misclassified "Acknowledged. No action needed; PR #12 LGTM." and
+    // "Fixed [SILENT] echo bug; PR #12 ready." as noop because the ack
+    // phrase came BEFORE the actionable content.
+    const NOOP_DISQUALIFIER =
+        /\b(?:LGTM|PR\s*#?\d+|merged|fix(?:ed|es)?\b|reviewed|approved|landed|shipped|ready\s+(?:to\s+merge|for\s+(?:merge|review|deploy)))\b/i;
+
     // [SILENT] marker — whole-string OR embedded. Takes precedence over
     // the @-mention guard below because LLM bots routinely quote the
     // sender's routing token while acknowledging no action ("Received
     // `@#6 [SILENT]`. No action was requested.") — the quoted @-mention
     // is an echo, not a fresh routing directive. 100-char cap keeps a
-    // status update wrapped in [SILENT] from leaking through.
-    if (/\[SILENT(?:[^\]]*)?\]/i.test(t) && t.length <= 100) return true;
+    // status update wrapped in [SILENT] from leaking through; the
+    // disqualifier blocks short status payloads that happen to contain
+    // the marker as a reference ("Fixed [SILENT] echo bug; PR #12 ready").
+    if (
+        /\[SILENT(?:[^\]]*)?\]/i.test(t) &&
+        t.length <= 100 &&
+        !NOOP_DISQUALIFIER.test(t)
+    ) return true;
 
     if (/@(?:#?[A-Za-z0-9]+|all)/.test(t)) return false;
 
@@ -161,16 +181,22 @@ export function isNoopAck(text: string): boolean {
     // with stand-by phrases ("Acknowledged. Standing by for your next
     // request.", "Standing down. No action taken.", "Noted. Standing by
     // for the next work item."). Pattern requires an ack opener AND a
-    // noop-style continuation, so real status updates like "Acknowledged
-    // the report — will file PR" or "Standing by for #1's signoff per
-    // spec" stay out. 2026-06-01 loop incident: #2/#5/#6 cycled these
-    // phrases ~10 times in 3 minutes — the original 30-char cap missed
-    // all of them.
+    // noop-style continuation AND no disqualifier, so real status
+    // updates like "Acknowledged the report — will file PR by EOD",
+    // "Standing by for #1's signoff per spec", or "Acknowledged. No
+    // action needed; PR #12 LGTM." stay out. 2026-06-01 loop incident:
+    // #2/#5/#6 cycled these phrases ~10 times in 3 minutes — the
+    // original 30-char cap missed all of them.
     const VERBOSE_ACK_OPENER =
         /^(?:acknowledged|noted|understood|roger|standing\s+(?:by|down))\b/i;
     const NOOP_CONTINUATION =
         /\b(?:no\s+action|stand\s+down|for\s+(?:your|the)\s+next\b|ready\s+for\s+(?:next|further|the)|await(?:ing)?\s+(?:further|your\s+next)|made\s+no\s+(?:file\s+)?changes|no\s+changes\s+made|no\s+further\s+(?:action|work))\b/i;
-    if (t.length <= 100 && VERBOSE_ACK_OPENER.test(t) && NOOP_CONTINUATION.test(t)) {
+    if (
+        t.length <= 100 &&
+        VERBOSE_ACK_OPENER.test(t) &&
+        NOOP_CONTINUATION.test(t) &&
+        !NOOP_DISQUALIFIER.test(t)
+    ) {
         return true;
     }
 
