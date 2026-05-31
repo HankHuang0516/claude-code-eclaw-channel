@@ -127,23 +127,56 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
  * inbound. Real bot-to-bot work (review reports, status updates with
  * actionable verbs, @-mentions) is NOT classified as a noop ack.
  *
- * Pattern is intentionally conservative: ≤30-char trimmed text, no
- * @-mention routing token, and matches a small fixed set of pure-ack
- * tokens across the locales we use.
+ * Pattern is intentionally conservative. Three layered checks:
+ *   (1) `[SILENT]` marker (whole-string or embedded) — takes precedence
+ *       over the @-mention guard so quoted echoes like "Received `@#6
+ *       [SILENT]`. No action..." still suppress. Capped at 100 chars.
+ *   (2) Verbose channel-mode chatter — opener (Acknowledged/Noted/
+ *       Understood/Roger/Standing by-down) + noop continuation (no
+ *       action / for your-the next / made no changes / etc). Both
+ *       required, so "Standing by for #1's signoff" stays out. Capped
+ *       at 100 chars.
+ *   (3) Short pure-ack tokens (「了解。」/「OK」/「ACK」/Acknowledged./...)
+ *       — ≤30-char trimmed text.
+ *
+ * Adding a new verbose opener requires picking a paired continuation
+ * the bot loop reliably emits; loose openers leak real status updates.
  */
 export function isNoopAck(text: string): boolean {
     if (!text) return false;
     const t = text.trim();
     if (t.length === 0) return false;
+
+    // [SILENT] marker — whole-string OR embedded. Takes precedence over
+    // the @-mention guard below because LLM bots routinely quote the
+    // sender's routing token while acknowledging no action ("Received
+    // `@#6 [SILENT]`. No action was requested.") — the quoted @-mention
+    // is an echo, not a fresh routing directive. 100-char cap keeps a
+    // status update wrapped in [SILENT] from leaking through.
+    if (/\[SILENT(?:[^\]]*)?\]/i.test(t) && t.length <= 100) return true;
+
     if (/@(?:#?[A-Za-z0-9]+|all)/.test(t)) return false;
-    // Explicit `[SILENT ...]` marker — bypasses the length cap because
-    // the syntax itself is unambiguous and the body often carries human
-    // context ("kanban echo of own card move").
-    if (/^\[SILENT[^\]]*\]$/i.test(t)) return true;
-    // Everything else falls under a tight length cap: real ack-only
-    // messages are always short. A 30-char trimmed-text limit keeps the
-    // regex set from accidentally swallowing a status update that
-    // happens to start with 「了解。」.
+
+    // Verbose stand-by chatter — LLM channel-mode bots pad pure acks
+    // with stand-by phrases ("Acknowledged. Standing by for your next
+    // request.", "Standing down. No action taken.", "Noted. Standing by
+    // for the next work item."). Pattern requires an ack opener AND a
+    // noop-style continuation, so real status updates like "Acknowledged
+    // the report — will file PR" or "Standing by for #1's signoff per
+    // spec" stay out. 2026-06-01 loop incident: #2/#5/#6 cycled these
+    // phrases ~10 times in 3 minutes — the original 30-char cap missed
+    // all of them.
+    const VERBOSE_ACK_OPENER =
+        /^(?:acknowledged|noted|understood|roger|standing\s+(?:by|down))\b/i;
+    const NOOP_CONTINUATION =
+        /\b(?:no\s+action|stand\s+down|for\s+(?:your|the)\s+next\b|ready\s+for\s+(?:next|further|the)|await(?:ing)?\s+(?:further|your\s+next)|made\s+no\s+(?:file\s+)?changes|no\s+changes\s+made|no\s+further\s+(?:action|work))\b/i;
+    if (t.length <= 100 && VERBOSE_ACK_OPENER.test(t) && NOOP_CONTINUATION.test(t)) {
+        return true;
+    }
+
+    // Short pure-ack tokens — strict 30-char cap keeps the regex set
+    // from accidentally swallowing a status update that happens to
+    // start with 「了解。」 or "Acknowledged".
     if (t.length > 30) return false;
     const ACK_PATTERNS = [
         /^了解[。!.！]?$/,
@@ -155,6 +188,11 @@ export function isNoopAck(text: string): boolean {
         /^thanks?\.?$/i,
         /^承知(?:しました)?[。!.！]?$/,
         /^かしこまりました[。!.！]?$/,
+        /^acknowledged[.!]?$/i,
+        /^noted[.!]?$/i,
+        /^understood[.!]?$/i,
+        /^roger[.!]?$/i,
+        /^standing\s+(?:by|down)[.!]?$/i,
     ];
     return ACK_PATTERNS.some((p) => p.test(t));
 }
