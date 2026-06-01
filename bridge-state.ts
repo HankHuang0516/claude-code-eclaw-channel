@@ -127,7 +127,7 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
  * inbound. Real bot-to-bot work (review reports, status updates with
  * actionable verbs, @-mentions) is NOT classified as a noop ack.
  *
- * Pattern is intentionally conservative. Three layered checks, each
+ * Pattern is intentionally conservative. Four layered checks, each
  * gated by a real-payload disqualifier (LGTM / PR #N / merged / fixed /
  * reviewed / approved / landed / shipped / ready-to-merge) so that ack
  * chatter wrapping a review verdict doesn't get suppressed:
@@ -141,7 +141,14 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
  *       action / for your-the next / made no changes / etc). Both
  *       required + disqualifier-blocked, so "Acknowledged. No action
  *       needed; PR #12 LGTM." stays out.
- *   (3) Short pure-ack tokens (「了解。」/「OK」/「ACK」/Acknowledged./...)
+ *   (3) Healthcheck ACK echoes — `ACK <nonce>` and the server-fanned
+ *       `[📢 FWD from #N] ACK <nonce>` shape. bridge.ts:1014 sends
+ *       `ACK ${nonce}` after every ECLAW_HEALTHCHECK ping; when the
+ *       server fans the ACK back to sibling entities (FWD), the body
+ *       falls between the 30-char short-token cap and the verbose
+ *       opener requirement, so neither (2) nor (4) caught it. Nonce
+ *       matches the HEALTHCHECK_RE capture group `[A-Za-z0-9_-]+`.
+ *   (4) Short pure-ack tokens (「了解。」/「OK」/「ACK」/Acknowledged./...)
  *       — ≤30-char trimmed text.
  *
  * Adding a new verbose opener requires picking a paired continuation
@@ -195,6 +202,29 @@ export function isNoopAck(text: string): boolean {
         t.length <= 100 &&
         VERBOSE_ACK_OPENER.test(t) &&
         NOOP_CONTINUATION.test(t) &&
+        !NOOP_DISQUALIFIER.test(t)
+    ) {
+        return true;
+    }
+
+    // Healthcheck ACK echo — bridge.ts:1014 sends `ACK <nonce>` after
+    // every ECLAW_HEALTHCHECK ping. The bare form (`ACK <nonce>`) lands
+    // at sibling bridges directly; the server-fanned form prefixes the
+    // body with `[📢 FWD from #N]` (📢 emoji optional, sender token is
+    // `#N` / `entity:N` / publicCode). Neither layer (4) (`^ACK\.?$`
+    // requires bare "ACK") nor layer (2) (needs a verbose opener word)
+    // catches it. 2026-06-02 incident: a FWD'd `ACK HC3mpvisgv38q2bks`
+    // from #3 and `ACK HC6mpvkcrgzpsl2vt` from #6 both leaked through
+    // and fired auto-wake.
+    //
+    // 80-char cap covers the worst-case `[📢 FWD from #publicCode] ACK
+    // <long-nonce>` shape with margin; the nonce regex pins the body to
+    // healthcheck format so a free-form `ACK: investigating` stays out.
+    const HEALTHCHECK_ACK_ECHO =
+        /^(?:\[(?:\p{Emoji_Presentation}|\p{Extended_Pictographic})?\s*FWD\s+from\s+(?:#?[A-Za-z0-9]+|entity[:\s]\d+)\]\s+)?ACK\s+[A-Za-z0-9_-]+[.!]?$/iu;
+    if (
+        t.length <= 80 &&
+        HEALTHCHECK_ACK_ECHO.test(t) &&
         !NOOP_DISQUALIFIER.test(t)
     ) {
         return true;
