@@ -1006,12 +1006,32 @@ Bun.serve({
         // Keep fleet health probes out of Claude's work queue. The delay lets
         // /api/client/speak finish writing its inbound echo before ACK updates
         // the entity message, which prevents false missing-ACK reports.
+        // Snapshot the sender locals into the closure — other inbound messages
+        // arriving in the next 3 s would otherwise mutate lastDeviceId /
+        // lastEntityId / lastSenderHint and the ACK would route to the wrong
+        // entity.
         const healthcheckMatch = text.trim().match(HEALTHCHECK_RE);
         if (healthcheckMatch) {
           const nonce = healthcheckMatch[1];
+          const capturedDevice = lastDeviceId;
+          const capturedEntity = lastEntityId;
+          const capturedHint = lastSenderHint;
           log(`Healthcheck fast-path scheduled for nonce=${nonce}`);
           setTimeout(() => {
-            forwardReplyToEClaw(`ACK ${nonce}`).catch((err) => {
+            if (!capturedDevice || capturedEntity === null) {
+              log(`Healthcheck fast-path: missing device/entity at fire time, dropping nonce=${nonce}`);
+              return;
+            }
+            sendReplyToEClaw({
+              apiBase: API_BASE,
+              apiKey: API_KEY,
+              preferTransformViaChannelKey: PREFER_TRANSFORM_VIA_CHANNEL_KEY,
+              deviceId: capturedDevice,
+              entityId: capturedEntity,
+              botSecret: botSecret || "",
+              text: `ACK ${nonce}`,
+              senderHint: capturedHint,
+            }).catch((err) => {
               log(`Healthcheck fast-path failed: ${err.message}`);
             });
           }, HEALTHCHECK_ACK_DELAY_MS);
