@@ -236,6 +236,10 @@ tmux send-keys -t eclaw-bridge 'cd /path/to/claude-code-eclaw-channel && \
 # 檢查 bridge 健康狀態
 curl http://localhost:18800/health
 
+# EClaw fleet monitor 會用 ECLAW_HEALTHCHECK <nonce> 驗證 #2。
+# bridge 會延遲約 3 秒直接回 ACK <nonce>，不送進 Claude Code 佇列，
+# 避免模型忙碌、auto-wake 或 /api/client/speak echo 造成誤判失聯。
+
 # 檢查 log
 cat /tmp/eclaw-bridge.log
 

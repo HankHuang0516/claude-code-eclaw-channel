@@ -115,6 +115,8 @@ const AUTO_WAKE_DELAY_S = parseInt(process.env.ECLAW_AUTO_WAKE_DELAY_S || "10", 
 const AUTO_WAKE_POLL_S = parseInt(process.env.ECLAW_AUTO_WAKE_POLL_S || "5", 10);
 const AUTO_WAKE_MAX_WAIT_S = parseInt(process.env.ECLAW_AUTO_WAKE_MAX_WAIT_S || "300", 10);
 const AUTO_WAKE_COOLDOWN_S = parseInt(process.env.ECLAW_AUTO_WAKE_COOLDOWN_S || "60", 10);
+const HEALTHCHECK_ACK_DELAY_MS = 3000;
+const HEALTHCHECK_RE = /^ECLAW_HEALTHCHECK\s+([A-Za-z0-9_-]+)/;
 
 // Last human message timestamp for reply enforcer
 let lastHumanMsgTimestamp: number | null = null;
@@ -1000,6 +1002,21 @@ Bun.serve({
           entityId: fromEntityId,
           publicCode: fromPublicCode,
         };
+
+        // Keep fleet health probes out of Claude's work queue. The delay lets
+        // /api/client/speak finish writing its inbound echo before ACK updates
+        // the entity message, which prevents false missing-ACK reports.
+        const healthcheckMatch = text.trim().match(HEALTHCHECK_RE);
+        if (healthcheckMatch) {
+          const nonce = healthcheckMatch[1];
+          log(`Healthcheck fast-path scheduled for nonce=${nonce}`);
+          setTimeout(() => {
+            forwardReplyToEClaw(`ACK ${nonce}`).catch((err) => {
+              log(`Healthcheck fast-path failed: ${err.message}`);
+            });
+          }, HEALTHCHECK_ACK_DELAY_MS);
+          return Response.json({ ok: true, handled: "healthcheck_ack", scheduled: true });
+        }
 
         // ── Auto-detect language from user message ──
         setLocale(detectLanguage(text));

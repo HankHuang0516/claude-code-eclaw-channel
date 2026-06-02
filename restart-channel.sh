@@ -31,11 +31,6 @@ load_channel_env() {
   export ECLAW_ENTITY_ID="${ECLAW_ENTITY_ID:-2}"
 }
 
-# Claude Code launch command
-CLAUDE_BIN="claude"
-CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-20250514}"
-CLAUDE_ARGS="--dangerously-skip-permissions --model $CLAUDE_MODEL"
-
 # ── Helpers ──
 json_out() {
   local ok="$1" action="$2" msg="$3"
@@ -67,6 +62,9 @@ check_fakechat_process() {
 MODE="${1:---smart}"
 
 load_channel_env
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-20250514}"
+CLAUDE_ARGS="--dangerously-skip-permissions --model $CLAUDE_MODEL"
 log "restart-channel.sh invoked with mode=$MODE"
 if [ -z "${ECLAW_API_KEY:-}" ]; then
   log "ERROR: ECLAW_API_KEY is not set; create $CHANNEL_DIR/.env or export it before restart"
