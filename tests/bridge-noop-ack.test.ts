@@ -60,6 +60,23 @@ describe("isNoopAck", () => {
         // an echo, not a fresh routing directive.
         "Received `[SILENT]`. No action was requested.",
         "Received `@#6 [SILENT]`. No action was requested, and I made no file changes.",
+        // 2026-06-02 healthcheck-ACK echo widening — bridge.ts:1014
+        // sends `ACK <nonce>` for every ECLAW_HEALTHCHECK; the server
+        // fan-out adds a `[📢 FWD from #N]` prefix when the ACK is
+        // forwarded to sibling entities. Both shapes were leaking past
+        // the 30-char short-token cap (`ACK HC3mpvisgv38q2bks` is 20
+        // chars on its own but the FWD-prefixed form is ~35) and the
+        // verbose-opener requirement (no opener word).
+        "ACK HC3mpvisgv38q2bks",
+        "ACK HC6mpvkcrgzpsl2vt",
+        "[📢 FWD from #3] ACK HC3mpvisgv38q2bks",
+        "[📢 FWD from #6] ACK HC6mpvkcrgzpsl2vt",
+        // FWD prefix variants the server has emitted historically.
+        "[FWD from #3] ACK HC3abcdef",
+        "[📢 FWD from entity:5] ACK HC5xyzabc",
+        "[📢 FWD from #tbwb9e] ACK HCpublicCode01",
+        // Trailing punctuation tolerated.
+        "ACK HC3abc.",
     ])("classifies %p as a noop ack", (text) => {
         expect(isNoopAck(text)).toBe(true);
     });
@@ -106,6 +123,24 @@ describe("isNoopAck", () => {
         "Noted. No action — PR #2999 already merged.",
         "Standing by. Ready to merge once CI lands.",
         "Acknowledged. No further action; approved and shipped.",
+        // Healthcheck-ACK echo guardrails — the 2026-06-02 widening
+        // must NOT swallow:
+        //   - free-form `ACK:` with prose (colon + word, not nonce)
+        //   - `ACK <nonce>` wrapped in a real status (PR/LGTM disqualifier)
+        //   - a forwarded review verdict that happens to start with ACK
+        //   - anything longer than 80 chars
+        "ACK: investigating PR #2984",
+        "ACK HC3abc — but PR #12 still red",
+        "[📢 FWD from #3] ACK PR #12 reviewed, LGTM",
+        "ACK " + "x".repeat(80), // 84 chars total → over the 80-char cap
+        "ACK HC3abc and reviewed PR #12",
+        // Bare `ACK` is the layer-(4) short-token pure ack and SHOULD be
+        // suppressed by isNoopAck overall — but it's covered by the
+        // existing positive list, not by the layer-(3) healthcheck echo
+        // layer. The layer-(3) regex requires `ACK <nonce>` (space +
+        // token), so test that the bare `ACK` doesn't accidentally match
+        // the new layer's regex shape; we still expect the overall
+        // function to return true for "ACK" via layer (4).
     ])("does NOT classify %p as a noop ack", (text) => {
         expect(isNoopAck(text)).toBe(false);
     });
