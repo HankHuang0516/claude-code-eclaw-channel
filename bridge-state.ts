@@ -237,6 +237,23 @@ export function isNoopAck(text: string): boolean {
         return true;
     }
 
+    // Model-healthcheck echo — monitor-modelcheck cron broadcasts
+    // `MODEL_HEALTHCHECK <nonce>` probes; siblings reply with
+    // `MODEL_HEALTH <nonce> entity=N status=OK`, which the server fans
+    // out as `[📢 FWD from #N] MODEL_HEALTH ...`. Pure protocol noise
+    // for recipients other than the probe issuer. Strict shape match
+    // pins to the canonical reply format so a real status update can't
+    // accidentally start with "MODEL_HEALTH".
+    const MODEL_HEALTH_ECHO =
+        /^MODEL_HEALTH\s+[A-Za-z0-9_-]+\s+entity=#?\d+(?:\s+status=(?:OK|FAIL|DEGRADED))?[.!]?$/i;
+    if (
+        t.length <= 80 &&
+        MODEL_HEALTH_ECHO.test(t) &&
+        !NOOP_DISQUALIFIER.test(t)
+    ) {
+        return true;
+    }
+
     // Healthcheck ACK echo — bridge.ts:1014 sends `ACK <nonce>` after
     // every ECLAW_HEALTHCHECK ping. The bare form (`ACK <nonce>`) lands
     // at sibling bridges directly; the server-fanned form prefixes the

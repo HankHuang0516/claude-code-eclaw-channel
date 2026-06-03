@@ -89,6 +89,13 @@ describe("isNoopAck", () => {
         "Codex completed with no text output.",
         "[📢 FWD from #6] Codex completed with no text output.",
         "Agent completed with no output.",
+        // 2026-06-03 monitor-modelcheck probe — sibling MODEL_HEALTH
+        // replies get FWD broadcast to peers. Pure protocol noise for
+        // recipients other than the probe issuer.
+        "MODEL_HEALTH MH3mpxntkargvwaf8 entity=3 status=OK",
+        "[📢 FWD from #3] MODEL_HEALTH MH3mpxntkargvwaf8 entity=3 status=OK",
+        "MODEL_HEALTH MHabc entity=#5",
+        "[📢 FWD from #5] MODEL_HEALTH MHxyz entity=5 status=DEGRADED",
     ])("classifies %p as a noop ack", (text) => {
         expect(isNoopAck(text)).toBe(true);
     });
