@@ -137,6 +137,9 @@ let lastAutoWakeSent = 0;
 // change on the happy path, re-binds automatically if state drifted).
 const SELF_CHECK_MIN = parseInt(process.env.ECLAW_SELF_CHECK_MIN || "30", 10);
 const SELF_CHECK_ENABLED = (process.env.ECLAW_SELF_CHECK_ENABLED || "true") !== "false";
+const ECLAW_REGISTRATION_RETRY_ATTEMPTS = parseInt(process.env.ECLAW_REGISTRATION_RETRY_ATTEMPTS || "5", 10);
+const ECLAW_REGISTRATION_RETRY_DELAY_MS = parseInt(process.env.ECLAW_REGISTRATION_RETRY_DELAY_MS || "2000", 10);
+const TRANSIENT_ECLAW_API_RE = /(server starting up|too many requests|rate.?limit|HTTP 429|HTTP 5\d\d)/i;
 // Track most recent channel message text so auto-wake nudge can tell
 // Claude WHICH message to reply to (not just "process pending")
 let lastPendingChannelMsg: string | null = null;
@@ -181,6 +184,44 @@ function markForwarded(id: string): boolean {
   if (forwardedMsgIds.has(id)) return false;
   forwardedMsgIds.set(id, now);
   return true;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryEClawApi(status: number, body: string): boolean {
+  return status === 429 || status >= 500 || TRANSIENT_ECLAW_API_RE.test(body);
+}
+
+async function fetchEClawApiWithRetry(
+  url: string,
+  init: RequestInit,
+  context: string,
+): Promise<{ resp: Response; body: string }> {
+  const attempts = Math.max(1, ECLAW_REGISTRATION_RETRY_ATTEMPTS);
+  const baseDelayMs = Math.max(0, ECLAW_REGISTRATION_RETRY_DELAY_MS);
+  let lastResp: Response | null = null;
+  let lastBody = "";
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const resp = await fetch(url, init);
+    const body = await resp.text();
+    if (resp.ok) return { resp, body };
+
+    lastResp = resp;
+    lastBody = body;
+    if (attempt < attempts && shouldRetryEClawApi(resp.status, body)) {
+      const delayMs = Math.min(30_000, baseDelayMs * attempt);
+      log(`${context} transient failure HTTP ${resp.status}; retrying in ${delayMs}ms (attempt ${attempt}/${attempts})`);
+      await sleep(delayMs);
+      continue;
+    }
+
+    return { resp, body };
+  }
+
+  return { resp: lastResp!, body: lastBody };
 }
 
 function connectWs() {
@@ -604,7 +645,7 @@ async function registerWithEClaw(isSelfCheck = false) {
   const callbackUrl = `${webhookUrl}/eclaw-webhook`;
 
   try {
-    const resp = await fetch(`${API_BASE}/api/channel/register`, {
+    const { resp, body: registerBody } = await fetchEClawApiWithRetry(`${API_BASE}/api/channel/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -612,11 +653,10 @@ async function registerWithEClaw(isSelfCheck = false) {
         callback_url: callbackUrl,
         callback_token: callbackToken,
       }),
-    });
+    }, `EClaw registration${isSelfCheck ? " self-check" : ""}`);
 
     if (!resp.ok) {
-      const body = await resp.text();
-      log(`EClaw registration${isSelfCheck ? " self-check" : ""} failed: ${body}`);
+      log(`EClaw registration${isSelfCheck ? " self-check" : ""} failed after retries: ${registerBody}`);
       if (isSelfCheck) {
         lastSelfCheckAt = Date.now();
         lastSelfCheckOk = false;
@@ -624,7 +664,7 @@ async function registerWithEClaw(isSelfCheck = false) {
       return;
     }
 
-    const data: any = await resp.json();
+    const data: any = JSON.parse(registerBody || "{}");
     const prevBound = lastEntityId !== null;
     const boundEntities = (data.entities || []).filter(
       (e: any) => e.boundToThisAccount === true,
@@ -673,7 +713,7 @@ async function registerWithEClaw(isSelfCheck = false) {
         return;
       }
 
-      const bindResp = await fetch(`${API_BASE}/api/channel/bind`, {
+      const { resp: bindResp, body: bindBody } = await fetchEClawApiWithRetry(`${API_BASE}/api/channel/bind`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -683,10 +723,10 @@ async function registerWithEClaw(isSelfCheck = false) {
           botName: process.env.ECLAW_BOT_NAME || "Claude Bot",
           ...(CONFIGURED_ENTITY_ID !== null ? { entityId: CONFIGURED_ENTITY_ID } : {}),
         }),
-      });
+      }, `EClaw bind${isSelfCheck ? " self-check" : ""}`);
 
       if (bindResp.ok) {
-        const bindData: any = await bindResp.json();
+        const bindData: any = JSON.parse(bindBody || "{}");
         if (CONFIGURED_ENTITY_ID !== null && bindData.entityId !== CONFIGURED_ENTITY_ID) {
           log(`EClaw bind returned entity ${bindData.entityId}, expected ${CONFIGURED_ENTITY_ID}; refusing to update local route`);
           if (isSelfCheck) lastSelfCheckOk = false;
@@ -700,6 +740,9 @@ async function registerWithEClaw(isSelfCheck = false) {
         } else {
           log(`Bound entity ${bindData.entityId}, publicCode: ${bindData.publicCode}`);
         }
+      } else {
+        log(`EClaw bind${isSelfCheck ? " self-check" : ""} failed after retries: ${bindBody}`);
+        if (isSelfCheck) lastSelfCheckOk = false;
       }
     }
   } catch (err: any) {
@@ -743,6 +786,8 @@ Bun.serve({
         lastSelfCheckAt: lastSelfCheckAt ? new Date(lastSelfCheckAt).toISOString() : null,
         lastSelfCheckOk,
         lastSelfCheckAge: lastSelfCheckAt ? Math.round((Date.now() - lastSelfCheckAt) / 1000) : null,
+        registrationReady: lastDeviceId !== null && lastEntityId !== null && botSecret !== null,
+        registeredEntityId: lastEntityId,
         // 2026-04-27 zombie /ask fix
         pendingAsks: pendingAsks.size,
         askTtlMin: ASK_TTL_MS / 60_000,

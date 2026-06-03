@@ -134,6 +134,36 @@ describe("sendReplyToEClaw — error handling", () => {
       sendReplyToEClaw({ ...BASE_OPTS, preferTransformViaChannelKey: false }),
     ).rejects.toThrow("HTTP 400");
   });
+
+  test("retries transient rate limits before succeeding", async () => {
+    const fetchMock = mock()
+      .mockResolvedValueOnce(new Response('{"success":false,"error":"Too many requests — try again shortly"}', { status: 429 }))
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as any;
+
+    await sendReplyToEClaw({
+      ...BASE_OPTS,
+      preferTransformViaChannelKey: false,
+      retryDelayMs: 0,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("does not retry non-transient failures", async () => {
+    const fetchMock = mock(async () => new Response("bad request", { status: 400 }));
+    globalThis.fetch = fetchMock as any;
+
+    await expect(
+      sendReplyToEClaw({
+        ...BASE_OPTS,
+        preferTransformViaChannelKey: false,
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow("HTTP 400");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── applyOutboundMention — auto-prepend behavior ─────────────────────────────

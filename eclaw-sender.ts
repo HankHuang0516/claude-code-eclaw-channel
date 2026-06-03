@@ -28,6 +28,8 @@ export interface SendReplyOptions {
   botSecret: string;
   text: string;
   card?: unknown;
+  retryAttempts?: number;
+  retryDelayMs?: number;
   /**
    * Routing hint derived from the inbound webhook. When kind === "entity",
    * the sender supplies the original sender's publicCode so the bridge can
@@ -36,6 +38,16 @@ export interface SendReplyOptions {
    * outbound bot-to-bot replies fan out to every entity on the device.
    */
   senderHint?: SenderHint | null;
+}
+
+const TRANSIENT_REPLY_ERROR_RE = /(server starting up|too many requests|rate.?limit|HTTP 429|HTTP 5\d\d)/i;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryReply(status: number, body: string): boolean {
+  return status === 429 || status >= 500 || TRANSIENT_REPLY_ERROR_RE.test(body);
 }
 
 /**
@@ -138,14 +150,26 @@ export async function sendReplyToEClaw(opts: SendReplyOptions): Promise<void> {
       ? buildTransformRequest(opts)
       : buildChannelMessageRequest(opts);
 
-  const resp = await fetch(req.url, {
-    method: req.method,
-    headers: req.headers,
-    body: req.body,
-  });
+  const attempts = Math.max(1, opts.retryAttempts ?? 5);
+  const retryDelayMs = Math.max(0, opts.retryDelayMs ?? 2_000);
+  let lastError = "";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const resp = await fetch(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.body,
+    });
 
-  if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+    if (resp.ok) return;
+
+    lastError = `HTTP ${resp.status}: ${errText.slice(0, 200)}`;
+    if (attempt < attempts && shouldRetryReply(resp.status, errText)) {
+      await sleep(Math.min(30_000, retryDelayMs * attempt));
+      continue;
+    }
+    throw new Error(lastError);
   }
+
+  throw new Error(lastError || "Reply send failed");
 }
