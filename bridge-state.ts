@@ -156,7 +156,16 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
  */
 export function isNoopAck(text: string): boolean {
     if (!text) return false;
-    const t = text.trim();
+    // Strip a leading `[📢 FWD from #N]` / `[FWD from entity:N]` prefix
+    // so the opener-anchored layers below match the body. 2026-06-03
+    // loop incident: #6 echoed verbose "[📢 FWD from #6] Acknowledged
+    // `[SILENT]`; no action required and no file changes made." which
+    // had every ingredient layer 2 needs except the `^acknowledged`
+    // anchor — the FWD prefix shifted it off the start of the string.
+    // Emoji optional; sender token is `#N` / `entity:N` / publicCode.
+    const FWD_PREFIX =
+        /^\[(?:\p{Emoji_Presentation}|\p{Extended_Pictographic})?\s*FWD\s+from\s+(?:#?[A-Za-z0-9]+|entity[:\s]\d+)\]\s+/iu;
+    const t = text.trim().replace(FWD_PREFIX, "");
     if (t.length === 0) return false;
 
     // Real-payload disqualifier — even when ack chatter matches below,
@@ -176,6 +185,8 @@ export function isNoopAck(text: string): boolean {
     // status update wrapped in [SILENT] from leaking through; the
     // disqualifier blocks short status payloads that happen to contain
     // the marker as a reference ("Fixed [SILENT] echo bug; PR #12 ready").
+    // Verbose [SILENT] echoes longer than 100 are caught by the
+    // opener+continuation layer below instead.
     if (
         /\[SILENT(?:[^\]]*)?\]/i.test(t) &&
         t.length <= 100 &&
@@ -194,14 +205,33 @@ export function isNoopAck(text: string): boolean {
     // action needed; PR #12 LGTM." stay out. 2026-06-01 loop incident:
     // #2/#5/#6 cycled these phrases ~10 times in 3 minutes — the
     // original 30-char cap missed all of them.
+    //
+    // 2026-06-03 added "inbound" / "received" openers and "no actionable",
+    // "did not use" continuations to catch Codex's verbose echo
+    // "Inbound `[SILENT]` acknowledged. No actionable operation was
+    // requested, so I made no file changes and did not use Computer Use."
     const VERBOSE_ACK_OPENER =
-        /^(?:acknowledged|noted|understood|roger|standing\s+(?:by|down))\b/i;
+        /^(?:acknowledged|noted|understood|roger|standing\s+(?:by|down)|inbound\b|received\b)/i;
     const NOOP_CONTINUATION =
-        /\b(?:no\s+action|stand\s+down|for\s+(?:your|the)\s+next\b|ready\s+for\s+(?:next|further|the)|await(?:ing)?\s+(?:further|your\s+next)|made\s+no\s+(?:file\s+)?changes|no\s+changes\s+made|no\s+further\s+(?:action|work))\b/i;
+        /\b(?:no\s+action(?:able)?|stand\s+down|for\s+(?:your|the)\s+next\b|ready\s+for\s+(?:next|further|the)|await(?:ing)?\s+(?:further|your\s+next)|made\s+no\s+(?:file\s+)?changes|no\s+changes\s+made|no\s+further\s+(?:action|work)|did\s+not\s+use|no\s+(?:file\s+)?changes(?:\s+made)?)\b/i;
     if (
-        t.length <= 100 &&
+        t.length <= 200 &&
         VERBOSE_ACK_OPENER.test(t) &&
         NOOP_CONTINUATION.test(t) &&
+        !NOOP_DISQUALIFIER.test(t)
+    ) {
+        return true;
+    }
+
+    // Empty-completion status — Codex/SDK harnesses sometimes emit
+    // "Codex completed with no text output." / "Agent completed with no
+    // output." when the LLM produced nothing usable. Pure status; never
+    // a routing directive. Strict shape match + disqualifier guard.
+    const EMPTY_COMPLETION =
+        /^(?:codex|agent|claude|llm|bot)\s+completed\s+with\s+no\s+(?:text\s+)?output[.!]?$/i;
+    if (
+        t.length <= 80 &&
+        EMPTY_COMPLETION.test(t) &&
         !NOOP_DISQUALIFIER.test(t)
     ) {
         return true;

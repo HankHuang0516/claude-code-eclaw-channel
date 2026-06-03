@@ -77,6 +77,18 @@ describe("isNoopAck", () => {
         "[📢 FWD from #tbwb9e] ACK HCpublicCode01",
         // Trailing punctuation tolerated.
         "ACK HC3abc.",
+        // 2026-06-03 #6 FWD echo loop — the [SILENT] cap was 100 chars,
+        // the verbose-opener layer was anchored at start so the FWD
+        // prefix shifted "Acknowledged" / "Received" off `^`, and
+        // "Codex completed with no text output." had no [SILENT] marker
+        // at all. Loop ran ~150 cycles before the bridge fix landed.
+        "Inbound `[SILENT]` acknowledged. No actionable operation was requested, so I made no file changes and did not use Computer Use.",
+        "[📢 FWD from #6] Inbound `[SILENT]` acknowledged. No actionable operation was requested, so I made no file changes and did not use Computer Use.",
+        "Acknowledged `[SILENT]`; no action required and no file changes made.",
+        "[📢 FWD from #6] Acknowledged `[SILENT]`; no action required and no file changes made.",
+        "Codex completed with no text output.",
+        "[📢 FWD from #6] Codex completed with no text output.",
+        "Agent completed with no output.",
     ])("classifies %p as a noop ack", (text) => {
         expect(isNoopAck(text)).toBe(true);
     });
