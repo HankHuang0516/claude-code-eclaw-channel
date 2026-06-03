@@ -971,16 +971,31 @@ Bun.serve({
         // the inbound source so eclaw-sender can auto-prepend @publicCode
         // (bot-to-bot) and pass senderHint to /api/transform as a fallback.
         const fromEntityIdRaw = body.fromEntityId;
-        const fromEntityId =
+        // Fallback parse from the `from` string — server-fanned FWD echoes
+        // (2026-06-03 incident) sometimes ship without explicit
+        // body.fromEntityId/body.fromPublicCode, leaving hintKind="unknown"
+        // and bypassing isNoopBotToBotAck. The `from` field still carries
+        // "entity:N" / "#N" / 6-char publicCode shapes the server uses
+        // in its own routing, so derive the hint from it as a last resort.
+        const fromStr = typeof from === "string" ? from : "";
+        const fromMatchEntityNum = fromStr.match(/^(?:entity[:\s]|#)(\d+)$/i);
+        const fromMatchPublicCode = fromStr.match(/^[A-Za-z0-9]{6}$/);
+        let fromEntityId: number | undefined =
           typeof fromEntityIdRaw === "number"
             ? fromEntityIdRaw
             : typeof fromEntityIdRaw === "string" && /^\d+$/.test(fromEntityIdRaw)
               ? parseInt(fromEntityIdRaw, 10)
               : undefined;
-        const fromPublicCode =
+        if (fromEntityId === undefined && fromMatchEntityNum) {
+          fromEntityId = parseInt(fromMatchEntityNum[1], 10);
+        }
+        let fromPublicCode: string | null =
           typeof body.fromPublicCode === "string" && body.fromPublicCode.length > 0
             ? body.fromPublicCode
             : null;
+        if (!fromPublicCode && fromMatchPublicCode) {
+          fromPublicCode = fromMatchPublicCode[0];
+        }
         const isBroadcast = !!body.isBroadcast;
         let hintKind: SenderHint["kind"];
         if (isBroadcast) {
@@ -997,6 +1012,9 @@ Bun.serve({
         } else {
           hintKind = "unknown";
         }
+        log(
+          `Sender hint: from="${fromStr}" → kind=${hintKind} entityId=${fromEntityId ?? "-"} publicCode=${fromPublicCode ?? "-"}`,
+        );
         lastSenderHint = {
           kind: hintKind,
           entityId: fromEntityId,

@@ -111,6 +111,60 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
 }
 
 /**
+ * Strips server-side wrapper blocks from the inbound webhook body so the
+ * noop-ack classifier sees the actual sender message.
+ *
+ * 2026-06-03 incident: the EClaw server started prepending centrally-
+ * managed policy blocks ("[EClaw central routing policy]" + "[EClaw
+ * managed prompt policy - claude_code]") and appending tool/hint blocks
+ * ("[AVAILABLE TOOLS — ...]", "[Local Variables available: ...]",
+ * "[API HINT — ...]") to every inbound. Webhook body.text grew from
+ * ~50 chars (`[📢 FWD from #3] ACK HC3mpxo7x4m02hldb`) to ~5700 chars
+ * with the actual message buried in the middle. The ack-echo layers in
+ * isNoopAck below all rely on either `^` anchors or length caps (80 chars
+ * for HEALTHCHECK_ACK_ECHO, 30 chars for short-token list); the wrapped
+ * form blew past all of them and three FWD ACK echoes from #3/#5/#6
+ * fired auto-wake nudges back-to-back at 06:13:57 / 06:14:09 / 06:14:15.
+ *
+ * Block layout (in delivery order):
+ *   [EClaw central routing policy] ... [End EClaw central routing policy]
+ *   [EClaw managed prompt policy - <channel>] ... [End EClaw managed prompt policy]
+ *   [EClaw from <sender>] <actual message body>
+ *   [Local Variables available: ...]    (optional, kept above [API HINT])
+ *   [API HINT — ...]                    (optional)
+ *   [AVAILABLE TOOLS — Mission Dashboard] ...
+ *   [AVAILABLE TOOLS — Kanban Board] ...
+ *
+ * Strategy: peel off leading "[EClaw <something> policy]" ... "[End
+ * EClaw <something> policy]" blocks (zero or more), strip a leading
+ * "[EClaw from <sender>] " marker, and cut everything at the first
+ * trailing meta-block opener ([AVAILABLE TOOLS / [Local Variables /
+ * [API HINT). The result is the sender's literal text — same shape
+ * isNoopAck saw before the policy rollout.
+ *
+ * Idempotent: an already-stripped string (the pre-rollout shape) passes
+ * through unchanged because none of the markers match.
+ */
+export function stripServerWrappers(text: string): string {
+    if (!text) return text;
+    let t = text;
+    // Peel leading policy blocks. Allow multiple in case the server
+    // ever chains more than the two it ships today.
+    const POLICY_BLOCK = /^\s*\[EClaw[^\]\n]*policy[^\]\n]*\][\s\S]*?\[End EClaw[^\]\n]*policy[^\]\n]*\]\s*/i;
+    while (POLICY_BLOCK.test(t)) {
+        t = t.replace(POLICY_BLOCK, "");
+    }
+    // Strip the "[EClaw from <sender>]" inbound prefix — sender token
+    // is freeform (entity:N / publicCode / monitor-modelcheck-2 / etc).
+    t = t.replace(/^\s*\[EClaw from [^\]\n]+\]\s+/, "");
+    // Cut trailing meta blocks. Earliest marker wins so we don't
+    // accidentally include "[API HINT" inside "[AVAILABLE TOOLS".
+    const TRAILING_MARKERS = /\n\s*\[(?:AVAILABLE TOOLS|Local Variables available|API HINT|MENTIONS)\b[\s\S]*$/;
+    t = t.replace(TRAILING_MARKERS, "");
+    return t.trim();
+}
+
+/**
  * Detects bot-to-bot noop ack messages (「了解。」/「收到」/「OK」/...) that
  * shouldn't trigger the auto-wake nudge.
  *
@@ -153,9 +207,18 @@ export function decideAutoWakeTickAction(state: TmuxState): AutoWakeAction {
  *
  * Adding a new verbose opener requires picking a paired continuation
  * the bot loop reliably emits; loose openers leak real status updates.
+ *
+ * Pre-step: stripServerWrappers peels off the centrally-managed policy
+ * blocks and trailing tool-hint blocks the EClaw server now prepends
+ * to every inbound (2026-06-03 wrapper rollout). Without this the
+ * ^-anchored / length-capped layers below cannot see the embedded ack.
  */
 export function isNoopAck(text: string): boolean {
     if (!text) return false;
+    // Strip server-side wrapper blocks first so the layers below see
+    // the sender's literal message body, not the 5KB policy envelope.
+    const unwrapped = stripServerWrappers(text);
+    if (unwrapped.length === 0) return false;
     // Strip a leading `[📢 FWD from #N]` / `[FWD from entity:N]` prefix
     // so the opener-anchored layers below match the body. 2026-06-03
     // loop incident: #6 echoed verbose "[📢 FWD from #6] Acknowledged
@@ -165,7 +228,7 @@ export function isNoopAck(text: string): boolean {
     // Emoji optional; sender token is `#N` / `entity:N` / publicCode.
     const FWD_PREFIX =
         /^\[(?:\p{Emoji_Presentation}|\p{Extended_Pictographic})?\s*FWD\s+from\s+(?:#?[A-Za-z0-9]+|entity[:\s]\d+)\]\s+/iu;
-    const t = text.trim().replace(FWD_PREFIX, "");
+    const t = unwrapped.replace(FWD_PREFIX, "");
     if (t.length === 0) return false;
 
     // Real-payload disqualifier — even when ack chatter matches below,
