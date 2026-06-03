@@ -157,6 +157,17 @@ export function stripServerWrappers(text: string): string {
     // Strip the "[EClaw from <sender>]" inbound prefix — sender token
     // is freeform (entity:N / publicCode / monitor-modelcheck-2 / etc).
     t = t.replace(/^\s*\[EClaw from [^\]\n]+\]\s+/, "");
+    // 2026-06-03 follow-up: peel the bot-to-bot direct-form header
+    // "[Bot-to-Bot message from Entity N (NAME)]" and the adjacent
+    // "[Quota: X/8 bot-to-bot remaining ...]" instruction line that
+    // the server prepends when an entity dispatches to a peer via
+    // /api/transform speakTo. These were leaking past the FWD-prefix
+    // strip and the ^-anchored opener layers below (see card
+    // card_3ad0fcc55826f915c5ea6fa1 / PR #16 verification log).
+    // Match to end-of-line (not first `]`) because these headers can
+    // contain nested `[…]` quoting like `[Quota: … output "[SILENT]" if …]`.
+    t = t.replace(/^\s*\[Bot-to-Bot message from Entity[^\n]*\]\s*\n?/i, "");
+    t = t.replace(/^\s*\[Quota:[^\n]*\]\s*\n?/i, "");
     // Cut trailing meta blocks. Earliest marker wins so we don't
     // accidentally include "[API HINT" inside "[AVAILABLE TOOLS".
     const TRAILING_MARKERS = /\n\s*\[(?:AVAILABLE TOOLS|Local Variables available|API HINT|MENTIONS)\b[\s\S]*$/;
@@ -256,7 +267,13 @@ export function isNoopAck(text: string): boolean {
         !NOOP_DISQUALIFIER.test(t)
     ) return true;
 
-    if (/@(?:#?[A-Za-z0-9]+|all)/.test(t)) return false;
+    // Ignore @-mentions quoted inside backticks — those are echoes of the
+    // original message, not fresh routing directives. 2026-06-03 leak:
+    // "No action taken. The inbound message was `@#6 [SILENT]`, which
+    // EClaw treats as a silent/no-op token after mention stripping." has
+    // a real @-mention inside backticks and would otherwise wake.
+    const tWithoutBacktickQuotes = t.replace(/`[^`]*`/g, "");
+    if (/@(?:#?[A-Za-z0-9]+|all)/.test(tWithoutBacktickQuotes)) return false;
 
     // Verbose stand-by chatter — LLM channel-mode bots pad pure acks
     // with stand-by phrases ("Acknowledged. Standing by for your next
@@ -273,10 +290,15 @@ export function isNoopAck(text: string): boolean {
     // "did not use" continuations to catch Codex's verbose echo
     // "Inbound `[SILENT]` acknowledged. No actionable operation was
     // requested, so I made no file changes and did not use Computer Use."
+    // 2026-06-03 follow-up: added `no\s+action` to openers so messages
+    // like "No action taken. The inbound request was [SILENT]..." match
+    // without relying on a preceding `acknowledged`/`noted` opener.
+    // Card_3ad0fcc55826f915c5ea6fa1 / PR #16 verification log showed
+    // these leaking from #6's bot-to-bot direct form.
     const VERBOSE_ACK_OPENER =
-        /^(?:acknowledged|noted|understood|roger|standing\s+(?:by|down)|inbound\b|received\b)/i;
+        /^(?:acknowledged|noted|understood|roger|standing\s+(?:by|down)|inbound\b|received\b|no\s+action\b)/i;
     const NOOP_CONTINUATION =
-        /\b(?:no\s+action(?:able)?|stand\s+down|for\s+(?:your|the)\s+next\b|ready\s+for\s+(?:next|further|the)|await(?:ing)?\s+(?:further|your\s+next)|made\s+no\s+(?:file\s+)?changes|no\s+changes\s+made|no\s+further\s+(?:action|work)|did\s+not\s+use|no\s+(?:file\s+)?changes(?:\s+made)?)\b/i;
+        /\b(?:no\s+action(?:able)?|stand\s+down|for\s+(?:your|the)\s+next\b|ready\s+for\s+(?:next|further|the)|await(?:ing)?\s+(?:further|your\s+next)|made\s+no\s+(?:file\s+)?changes|no\s+changes\s+made|no\s+further\s+(?:action|work)|did\s+not\s+use|no\s+(?:file\s+)?changes(?:\s+made)?|did\s+not\s+ask|silent[\s/]+no-?op)\b/i;
     if (
         t.length <= 200 &&
         VERBOSE_ACK_OPENER.test(t) &&
