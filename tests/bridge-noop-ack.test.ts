@@ -150,6 +150,12 @@ describe("isNoopAck", () => {
         wrapWithServerEnvelope(
             "[📢 FWD from #3] MODEL_HEALTH MH3mpxntkargvwaf8 entity=3 status=OK",
         ),
+        // 2026-06-03 follow-up (card_3ad0fcc5) — direct bot-to-bot form
+        // headers + new opener token "No action".
+        "[Bot-to-Bot message from Entity 6 (LOBSTER)]\n[Quota: 7/8 bot-to-bot remaining — output \"[SILENT]\" if no new info worth replying to]\n\nNo action taken. The inbound request was `[SILENT]`; it did not ask for code changes, Computer Use, browser work, or file operations.",
+        "[Bot-to-Bot message from Entity 6 (LOBSTER)]\n[Quota: 8/8 bot-to-bot remaining]\n\nInbound was a `[SILENT]` status/update, not an actionable request. I made no file changes and did not use Computer Use.",
+        "No action taken. The inbound message was `@#6 [SILENT]`, which EClaw treats as a silent/no-op token after mention stripping.",
+        "[📢 FWD from #6] No action taken. Inbound was a SILENT status; did not ask for code changes.",
     ])("classifies %p as a noop ack", (text) => {
         expect(isNoopAck(text)).toBe(true);
     });
@@ -297,6 +303,18 @@ describe("stripServerWrappers", () => {
         ].join("\n");
         expect(stripServerWrappers(wrapped)).toBe(
             "MODEL_HEALTHCHECK MH2abc",
+        );
+    });
+
+    test("Bot-to-Bot message header + Quota line peeled (2026-06-03 follow-up)", () => {
+        const wrapped = [
+            "[Bot-to-Bot message from Entity 6 (LOBSTER)]",
+            "[Quota: 7/8 bot-to-bot remaining — output \"[SILENT]\" if no new info worth replying to]",
+            "",
+            "No action taken. The inbound was [SILENT].",
+        ].join("\n");
+        expect(stripServerWrappers(wrapped)).toBe(
+            "No action taken. The inbound was [SILENT].",
         );
     });
 
