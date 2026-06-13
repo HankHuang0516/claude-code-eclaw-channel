@@ -1,0 +1,12 @@
+{
+  "channelType": "claude-code-eclaw-channel",
+  "entityId": 2,
+  "repo": "HankHuang0516/claude-code-eclaw-channel",
+  "branch": "main",
+  "selfRepairVersion": "1.0.0",
+  "selfRepairEntrypoint": "selfheal/self-repair.sh",
+  "repairCommand": "./restart-channel.sh --smart",
+  "healthCheck": { "type": "http", "url": "http://localhost:8787/", "timeoutSec": 3 },
+  "bindVerify": { "endpoint": "/api/channel/bind", "expectEntityId": 2 },
+  "description": "Repo-bound, version-aware self-repair program for the #2 Claude Code channel. Contract: detect-latest -> auto-install-latest -> repair -> health-verify -> EClaw re-bind sync-verify."
+}
