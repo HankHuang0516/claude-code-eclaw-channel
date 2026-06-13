@@ -442,3 +442,35 @@ export function decideReplyEnforcerAction(
     if (state === "idle") return { type: "nudge_and_auto_wake" };
     return { type: "nudge_only" };
 }
+
+/**
+ * card_b51: classify an inbound fakechat WS message.
+ *
+ * The fakechat reply tool's input schema requires `text`, but Claude can call
+ * it with `message=` instead (param mismatch). When that happens, the WS
+ * broadcast still goes through as `{type:'msg', from:'assistant', id, ts}`
+ * with no `text` field — and the bridge previously gated BOTH the
+ * watchdog-clear and the forward on `data.text` being truthy. The result:
+ * enforcer thinks Claude never replied → nudges every 3 min for hours
+ * (2026-06-12 11:54-12:14 TW blackout).
+ *
+ * Split that decision:
+ *   - "forward":      assistant msg with non-empty text → forward + clear state
+ *   - "warn_no_text": assistant msg envelope, no text → clear state, log warn
+ *   - "ignore":       not an assistant msg, or no device/entity binding yet
+ *
+ * Callers still apply the dedup-id check on top of this.
+ */
+export type AssistantWsClassification = "ignore" | "forward" | "warn_no_text";
+
+export function classifyAssistantWsMessage(
+    data: unknown,
+    ctx: { hasDevice: boolean; hasEntity: boolean }
+): AssistantWsClassification {
+    if (!ctx.hasDevice || !ctx.hasEntity) return "ignore";
+    if (data === null || typeof data !== "object") return "ignore";
+    const d = data as Record<string, unknown>;
+    if (d.from !== "assistant" || d.type !== "msg") return "ignore";
+    if (typeof d.text === "string" && d.text.length > 0) return "forward";
+    return "warn_no_text";
+}

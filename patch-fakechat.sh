@@ -81,6 +81,25 @@ new_content = pattern.sub(
     count=1
 )
 
+# card_b51 hardening: alias args.message → args.text in the reply tool body.
+# Upstream fakechat reads only args.text; calls with `message=` silently broadcast
+# a text-less envelope (bridge then drops the forward, user sees nothing).
+# Idempotent: skips if the alias is already present.
+reply_pattern = re.compile(
+    r"(case 'reply':\s*\{\s*\n\s*const text = )args\.text( as string)"
+)
+if "args.text ?? args.message" in new_content:
+    print("ℹ️  reply text alias already present, skipping")
+elif reply_pattern.search(new_content):
+    new_content = reply_pattern.sub(
+        r"\1(args.text ?? args.message)\2",
+        new_content,
+        count=1
+    )
+    print("✅ Patched reply tool: args.text ?? args.message alias")
+else:
+    print("⚠️  Could not find `case 'reply':` text-binding line — skipping alias patch")
+
 with open(server_path, 'w') as f:
     f.write(new_content)
 

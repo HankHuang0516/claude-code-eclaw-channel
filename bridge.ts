@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { t, setLocale, detectLanguage } from "./i18n.ts";
 import {
+  classifyAssistantWsMessage,
   classifyTmuxScreen,
   decideAutoWakeTickAction,
   decideReplyEnforcerAction,
@@ -264,14 +265,19 @@ function connectWs() {
     try {
       const data = JSON.parse(String(event.data));
       log(`Fakechat message: ${JSON.stringify(data).slice(0, 200)}`);
-      // If it's an assistant reply, forward to EClaw
-      if (data.from === "assistant" && data.text && lastDeviceId && lastEntityId !== null) {
+      // card_b51: split watchdog-clear from text-forward. See
+      // classifyAssistantWsMessage docs for why text-less envelopes must
+      // still clear enforcer state.
+      const action = classifyAssistantWsMessage(data, {
+        hasDevice: !!lastDeviceId,
+        hasEntity: lastEntityId !== null,
+      });
+      if (action !== "ignore") {
         const msgId = typeof data.id === "string" ? data.id : null;
         if (msgId && !markForwarded(msgId)) {
           log(`Reply skipped (dup id=${msgId})`);
           return;
         }
-        // Claude replied — clear all watchdog state + reply enforcer + auto-wake
         clearAllWatchdogState();
         lastHumanMsgTimestamp = null;
         lastPendingChannelMsg = null;
@@ -279,11 +285,15 @@ function connectWs() {
           clearTimeout(autoWakeTimer);
           autoWakeTimer = null;
         }
-        forwardReplyToEClaw(data.text).catch(async (err) => {
-          log(`Reply forward error: ${err.message}`);
-          // Feed error back to Claude so it can self-diagnose and retry
-          await notifyClaudeError(t("error.reply_failed", { error: err.message }));
-        });
+        if (action === "forward") {
+          forwardReplyToEClaw(data.text as string).catch(async (err) => {
+            log(`Reply forward error: ${err.message}`);
+            // Feed error back to Claude so it can self-diagnose and retry
+            await notifyClaudeError(t("error.reply_failed", { error: err.message }));
+          });
+        } else {
+          log(`WARN: assistant msg id=${data.id ?? "?"} has no text — likely reply tool param mismatch (called with message= instead of text=); enforcer cleared but nothing forwarded`);
+        }
       }
     } catch {
       // ignore non-JSON messages
