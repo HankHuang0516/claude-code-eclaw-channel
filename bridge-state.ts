@@ -463,6 +463,66 @@ export function decideReplyEnforcerAction(
  */
 export type AssistantWsClassification = "ignore" | "forward" | "warn_no_text";
 
+/**
+ * card_2f3be14d (forward-path silent blackout, class of card_b518d29e):
+ *
+ * The canonical reply field is `text`, but Claude's reply tool can be called
+ * with the wrong param name (`message=`, `content=`, `body=`) or the WS
+ * envelope can carry the text nested under `params` or inside an object value.
+ * When that happens the pre-fix bridge cleared the enforcer/watchdog state but
+ * forwarded NOTHING → the agent DID reply but the user/EClaw never received it
+ * (silent hang; same class that hit #1 Mac_F openclaw-project-f codex).
+ *
+ * This helper does a best-effort recovery of a non-empty reply string from the
+ * common alternate fields the reply tool may have used, so the caller can
+ * forward it instead of dropping. Returns the recovered string (forwarded
+ * verbatim by the caller) or null when no text can be found anywhere.
+ *
+ * Search order (first non-empty string wins):
+ *   text, message, content, body,
+ *   params.text, params.message, params.content, params.body,
+ *   and — when any of the above is itself an object — its
+ *   {text|message|content|body} sub-field.
+ *
+ * Exported for unit testing.
+ */
+export function extractReplyText(data: unknown): string | null {
+    if (data === null || typeof data !== "object") return null;
+    const d = data as Record<string, unknown>;
+
+    // Pull a non-empty string out of either a string value or a nested
+    // {text|message|content|body} object value.
+    const fromValue = (v: unknown): string | null => {
+        if (typeof v === "string") return v.length > 0 ? v : null;
+        if (v !== null && typeof v === "object") {
+            const o = v as Record<string, unknown>;
+            for (const k of ["text", "message", "content", "body"]) {
+                const inner = o[k];
+                if (typeof inner === "string" && inner.length > 0) return inner;
+            }
+        }
+        return null;
+    };
+
+    // Top-level alternate fields.
+    for (const k of ["text", "message", "content", "body"]) {
+        const got = fromValue(d[k]);
+        if (got) return got;
+    }
+
+    // Nested under `params` (some reply-tool envelopes wrap args).
+    const params = d.params;
+    if (params !== null && typeof params === "object") {
+        const p = params as Record<string, unknown>;
+        for (const k of ["text", "message", "content", "body"]) {
+            const got = fromValue(p[k]);
+            if (got) return got;
+        }
+    }
+
+    return null;
+}
+
 export function classifyAssistantWsMessage(
     data: unknown,
     ctx: { hasDevice: boolean; hasEntity: boolean }
@@ -471,6 +531,9 @@ export function classifyAssistantWsMessage(
     if (data === null || typeof data !== "object") return "ignore";
     const d = data as Record<string, unknown>;
     if (d.from !== "assistant" || d.type !== "msg") return "ignore";
-    if (typeof d.text === "string" && d.text.length > 0) return "forward";
+    // card_2f3be14d: recover reply text from alt params before giving up. If
+    // any non-empty string is found anywhere, forward it; only fall through to
+    // warn_no_text (clear watchdog, drop) when truly nothing is recoverable.
+    if (extractReplyText(d) !== null) return "forward";
     return "warn_no_text";
 }
