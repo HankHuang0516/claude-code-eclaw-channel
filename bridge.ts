@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { t, setLocale, detectLanguage } from "./i18n.ts";
 import {
   classifyAssistantWsMessage,
+  extractReplyText,
   classifyTmuxScreen,
   decideAutoWakeTickAction,
   decideReplyEnforcerAction,
@@ -286,13 +287,22 @@ function connectWs() {
           autoWakeTimer = null;
         }
         if (action === "forward") {
-          forwardReplyToEClaw(data.text as string).catch(async (err) => {
+          // card_2f3be14d: text may live under an alt param (message=/content=
+          // /body=/params.*/nested object) when the reply tool was called with
+          // the wrong arg name. extractReplyText recovers it so we forward the
+          // agent's reply instead of silently dropping it (forward-path blackout).
+          const recovered = extractReplyText(data);
+          const replyText = recovered ?? (typeof data.text === "string" ? data.text : "");
+          if (recovered !== null && (typeof data.text !== "string" || data.text.length === 0)) {
+            log(`Recovered reply text from alt param (text= was missing/empty) id=${data.id ?? "?"}`);
+          }
+          forwardReplyToEClaw(replyText).catch(async (err) => {
             log(`Reply forward error: ${err.message}`);
             // Feed error back to Claude so it can self-diagnose and retry
             await notifyClaudeError(t("error.reply_failed", { error: err.message }));
           });
         } else {
-          log(`WARN: assistant msg id=${data.id ?? "?"} has no text — likely reply tool param mismatch (called with message= instead of text=); enforcer cleared but nothing forwarded`);
+          log(`WARN: assistant msg id=${data.id ?? "?"} has no recoverable text in any known field (text/message/content/body/params.*); enforcer cleared but nothing forwarded`);
         }
       }
     } catch {
