@@ -16,7 +16,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { isNonRoutableNoise } from "../bridge-state.ts";
+import { isNonRoutableNoise, chooseReplyHint } from "../bridge-state.ts";
+
+const USER_HINT = { kind: "user" as const, entityId: undefined, publicCode: null };
+const BOT6_HINT = { kind: "entity" as const, entityId: 6, publicCode: "yrt82n" };
 
 // The exact #6 flood shapes from the incident transcript (2026-06-20 12:16–12:22).
 const HEARTBEAT = `[📢 FWD from #6] Codex #6 status heartbeat
@@ -92,5 +95,35 @@ describe("isNonRoutableNoise — real turns must ALWAYS update the target", () =
                 "entity",
             ),
         ).toBe(false);
+    });
+});
+
+describe("chooseReplyHint — un-addressed reply goes to the human principal", () => {
+    test("THE INCIDENT: a genuine #6 message set the bot target, but Claude's un-@mentioned status reply still routes to the human", () => {
+        // Sequence: Hank asks (USER_HINT) → #6 sends genuine PR-review work
+        // (BOT6_HINT becomes lastSenderHint) → Claude replies to Hank with no
+        // @mention. Must route to the human, NOT #6.
+        const hint = chooseReplyHint("修復完成，已 merge PR #20，bridge 重啟生效。", USER_HINT, BOT6_HINT);
+        expect(hint).toBe(USER_HINT);
+    });
+
+    test("a reply that explicitly @mentions a bot keeps the bot hint (mention layer routes it)", () => {
+        expect(chooseReplyHint("@#6 收到你的 PR review，我來 merge。", USER_HINT, BOT6_HINT)).toBe(BOT6_HINT);
+        expect(chooseReplyHint("@yrt82n stand down，這張我接手。", USER_HINT, BOT6_HINT)).toBe(BOT6_HINT);
+        expect(chooseReplyHint("@all 廣播測試", USER_HINT, BOT6_HINT)).toBe(BOT6_HINT);
+    });
+
+    test("falls back to the bot hint only when no human turn has happened yet", () => {
+        expect(chooseReplyHint("plain reply, no human seen yet", null, BOT6_HINT)).toBe(BOT6_HINT);
+    });
+
+    test("returns null when there is no target at all", () => {
+        expect(chooseReplyHint("hello", null, null)).toBeNull();
+    });
+
+    test("a non-@mention that merely contains an @ mid-text still goes to the human", () => {
+        // Only a LEADING mention triggers bot routing; an email-like @ mid-text must not.
+        const hint = chooseReplyHint("done — see report@card for details", USER_HINT, BOT6_HINT);
+        expect(hint).toBe(USER_HINT);
     });
 });

@@ -24,6 +24,7 @@ import {
   isMcpPermissionDialog,
   isNoopBotToBotAck,
   isNonRoutableNoise,
+  chooseReplyHint,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -58,6 +59,11 @@ let botSecret: string | null = null;
 // fan-out bug where omitting routing target broadcast-leaked to every
 // entity on the device.
 let lastSenderHint: SenderHint | null = null;
+// Last inbound from the HUMAN principal (kind user/broadcast), tracked
+// separately so an un-@mentioned reply in CHANNEL mode routes back to the
+// human even when a genuine bot message arrived in between (2026-06-20
+// routing fix, second layer — see chooseReplyHint).
+let lastUserSenderHint: SenderHint | null = null;
 
 // ── Pending /ask requests (PreToolUse hook long-poll) ──
 interface PendingAsk {
@@ -405,7 +411,12 @@ async function forwardReplyToEClaw(text: string, card?: any) {
   }
 
   const via = PREFER_TRANSFORM_VIA_CHANNEL_KEY && API_KEY ? "transform/channel-key" : "channel/message";
-  log(`Forwarding reply to EClaw (${via}): "${text.slice(0, 50)}..." device=${lastDeviceId} entity=${lastEntityId}${card ? " (with card)" : ""}`);
+  // Second-layer routing guard: an un-@mentioned reply in CHANNEL mode belongs
+  // to the human principal, so it must not inherit a bot target left by a
+  // genuine bot message that arrived mid-task. @mentioned replies keep the bot
+  // hint (the server's @-mention layer routes them). See chooseReplyHint.
+  const replyHint = chooseReplyHint(text, lastUserSenderHint, lastSenderHint);
+  log(`Forwarding reply to EClaw (${via}): "${text.slice(0, 50)}..." device=${lastDeviceId} entity=${lastEntityId} routeHint=${replyHint?.kind ?? "none"}/${replyHint?.entityId ?? replyHint?.publicCode ?? "-"}${card ? " (with card)" : ""}`);
 
   await sendReplyToEClaw({
     apiBase: API_BASE,
@@ -416,7 +427,7 @@ async function forwardReplyToEClaw(text: string, card?: any) {
     botSecret: botSecret || "",
     text,
     card,
-    senderHint: lastSenderHint,
+    senderHint: replyHint,
   });
 
   log(`Reply forwarded to EClaw successfully (${via})`);
@@ -1276,6 +1287,11 @@ Bun.serve({
             entityId: fromEntityId,
             publicCode: fromPublicCode,
           };
+          // Remember the human principal separately so an un-addressed reply
+          // routes back to them even after a genuine bot message intervenes.
+          if (hintKind === "user" || hintKind === "broadcast") {
+            lastUserSenderHint = lastSenderHint;
+          }
         }
 
         // Keep fleet health probes out of Claude's work queue. The delay lets

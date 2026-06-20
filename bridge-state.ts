@@ -447,6 +447,54 @@ export function isNonRoutableNoise(
     return FLEET_NOISE_RE.test(unwrapped) || FLEET_NOISE_RE.test(text);
 }
 
+/**
+ * Leading routing token in Claude's OWN reply text: `@#5`, `@31tlkr`, `@all`
+ * (case-insensitive for `@all`). Mirrors eclaw-sender's LEADING_MENTION_RE.
+ * When present, the server's @-mention auto-router (priority 2) decides the
+ * target, so senderHint (priority 3) is moot.
+ */
+const REPLY_LEADING_MENTION_RE = /^@(?:#\d+|[a-z0-9]{6}|all)\b/i;
+
+/**
+ * Second-layer routing guard (2026-06-20 follow-up). The noise guard stops
+ * heartbeat flood from hijacking the target, but a GENUINE bot work message
+ * (e.g. "#6: please review PR #3590") legitimately sets the target to that
+ * bot — so a status reply Claude then composes for the human still lands on
+ * the bot. Same phenomenon, different trigger.
+ *
+ * Resolution grounded in how routing priority actually works: a reply that
+ * leads with an @mention is routed by the server's @-mention layer (priority
+ * 2), above senderHint (priority 3). So:
+ *   - Reply WITH a leading @mention → Claude is explicitly addressing someone;
+ *     hand back the bot hint (lets eclaw-sender keep the @publicCode / let the
+ *     server route by the token). The mention wins regardless.
+ *   - Reply WITHOUT a leading @mention → in CHANNEL mode an un-addressed reply
+ *     belongs to the human principal. Prefer the last USER/broadcast hint so a
+ *     bot that merely pinged in the background can't capture Claude's reply to
+ *     the human. Falls back to the bot hint only when no human turn exists yet.
+ *
+ * This is safe with the established convention that Claude ALWAYS @mentions a
+ * peer when addressing one (see dispatch-visible-mention-prefix rule): bot-to-
+ * bot replies carry the token and route correctly; only un-addressed replies
+ * are redirected to the human — the correct, fail-safe bias (the human sees it
+ * and can redirect, rather than a wrong bot being spammed).
+ *
+ * Pure + exported for testing.
+ */
+export function chooseReplyHint(
+    replyText: string,
+    lastUserHint: SenderHint | null,
+    lastSenderHint: SenderHint | null,
+): SenderHint | null {
+    const trimmed = (replyText || "").trimStart();
+    if (REPLY_LEADING_MENTION_RE.test(trimmed)) {
+        // Explicitly addressed — the @mention routes it; keep the bot hint.
+        return lastSenderHint;
+    }
+    // Un-addressed reply → human principal first.
+    return lastUserHint ?? lastSenderHint;
+}
+
 export type EnforcerAction =
     | { type: "skip"; reason: "fresh" | "cooldown" | "no_human_msg" | "hook_pending" | "crashed" }
     | { type: "trigger_auto_wake_only" }
