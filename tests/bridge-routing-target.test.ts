@@ -113,8 +113,12 @@ describe("chooseReplyHint — un-addressed reply goes to the human principal", (
         expect(chooseReplyHint("@all 廣播測試", USER_HINT, BOT6_HINT)).toBe(BOT6_HINT);
     });
 
-    test("falls back to the bot hint only when no human turn has happened yet", () => {
-        expect(chooseReplyHint("plain reply, no human seen yet", null, BOT6_HINT)).toBe(BOT6_HINT);
+    test("un-@mentioned reply NEVER falls back to a bot — even with no human turn yet (post-restart guard)", () => {
+        // Regression for the 2026-06-20 live catch: right after a bridge restart
+        // lastUserHint is null while a genuine bot holds lastSenderHint; an
+        // un-addressed reply to Hank must NOT route to that bot. Resolve to null
+        // (normal reply, human reads via history poll), never entity:6.
+        expect(chooseReplyHint("plain reply, no human seen yet", null, BOT6_HINT)).toBeNull();
     });
 
     test("returns null when there is no target at all", () => {

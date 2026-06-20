@@ -469,15 +469,23 @@ const REPLY_LEADING_MENTION_RE = /^@(?:#\d+|[a-z0-9]{6}|all)\b/i;
  *     hand back the bot hint (lets eclaw-sender keep the @publicCode / let the
  *     server route by the token). The mention wins regardless.
  *   - Reply WITHOUT a leading @mention → in CHANNEL mode an un-addressed reply
- *     belongs to the human principal. Prefer the last USER/broadcast hint so a
- *     bot that merely pinged in the background can't capture Claude's reply to
- *     the human. Falls back to the bot hint only when no human turn exists yet.
+ *     belongs to the human principal. Return the last USER/broadcast hint, or
+ *     NULL when none is known yet — NEVER fall back to a bot. A null hint sends
+ *     a normal reply the human reads via chat-history polling; it must not be
+ *     silently routed to whatever bot last spoke.
  *
- * This is safe with the established convention that Claude ALWAYS @mentions a
- * peer when addressing one (see dispatch-visible-mention-prefix rule): bot-to-
- * bot replies carry the token and route correctly; only un-addressed replies
- * are redirected to the human — the correct, fail-safe bias (the human sees it
- * and can redirect, rather than a wrong bot being spammed).
+ * The earlier "fall back to lastSenderHint when no user hint" was WRONG and was
+ * caught live (2026-06-20): right after a bridge restart lastUserHint is null
+ * (the fresh process hasn't seen the human yet) while a genuine bot message
+ * holds lastSenderHint — so an un-addressed status reply to Hank fell through
+ * to #6 again (routeHint=entity/6 in the bridge log). An un-addressed reply
+ * must resolve to the human or to nobody, never to a bot.
+ *
+ * Safe with the established convention that Claude ALWAYS @mentions a peer when
+ * addressing one (see dispatch-visible-mention-prefix rule): bot-to-bot replies
+ * carry the token and route via the mention layer; un-addressed replies go to
+ * the human or fall through to a normal reply — the fail-safe bias (the human
+ * sees it, no bot gets spammed).
  *
  * Pure + exported for testing.
  */
@@ -491,8 +499,8 @@ export function chooseReplyHint(
         // Explicitly addressed — the @mention routes it; keep the bot hint.
         return lastSenderHint;
     }
-    // Un-addressed reply → human principal first.
-    return lastUserHint ?? lastSenderHint;
+    // Un-addressed reply → human principal, or nobody. NEVER a bot.
+    return lastUserHint;
 }
 
 export type EnforcerAction =
