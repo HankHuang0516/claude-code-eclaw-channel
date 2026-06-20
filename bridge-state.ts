@@ -406,6 +406,47 @@ export function isNoopBotToBotAck(
     return isNoopAck(text);
 }
 
+/**
+ * Non-conversational bot noise that must NOT become the reply-routing target.
+ *
+ * Root cause of the 2026-06-20 misroute (Hank): the bridge keeps a single
+ * module-global `lastSenderHint`, overwritten by EVERY inbound webhook, and
+ * the reply path reads it at *send* time. Claude's replies are async — between
+ * a real user's message and Claude finishing a long task, #6's relentless
+ * status-heartbeat / FWD / bridge-error flood overwrites the global to
+ * `{kind:"entity", entityId:6}`. The user-facing status report Claude composed
+ * for Hank then routes to #6 ("害他在瞎忙"). Claude truthfully said it never
+ * called `speakTo:[#6]` — the misroute came entirely from this auto-captured
+ * global, one layer down.
+ *
+ * Fix: the routing target should track "the last inbound that actually warrants
+ * a reply", not "the last packet that hit the webhook". This predicate flags
+ * the background bot traffic the webhook should skip when updating the target,
+ * leaving the prior real sender (a user, a broadcast, or genuine bot work)
+ * intact. Conservative by construction:
+ *   - Only ever suppresses `kind === "entity"`. A real user (kind "user") or a
+ *     broadcast ALWAYS updates the target — we never strand a human reply.
+ *   - `isNoopAck` reuse covers ack-of-ack chatter (了解/收到/[SILENT]/...).
+ *   - Heartbeat / lifecycle shapes the fleet emits on a timer and the bridge's
+ *     own injected error notices, none of which a human is waiting on.
+ *   - The existing real-payload disqualifier inside isNoopAck still protects
+ *     genuine bot work (PR #N / merged / reviewed / ...) — and the heartbeat
+ *     regexes below are anchored to the fleet's literal lifecycle phrasing, so
+ *     a bot status update that merely mentions "heartbeat" in prose is unaffected.
+ */
+const FLEET_NOISE_RE =
+    /(?:\bstatus heartbeat\b|codex exec is still running|\bLast exec output\b|\bBridge cutoff\b|Bridge error:|is still processing the previous message|Codex requests command approval)/i;
+
+export function isNonRoutableNoise(
+    text: string,
+    senderHintKind: SenderHintKind | undefined,
+): boolean {
+    if (senderHintKind !== "entity") return false;
+    if (isNoopAck(text)) return true;
+    const unwrapped = stripServerWrappers(text);
+    return FLEET_NOISE_RE.test(unwrapped) || FLEET_NOISE_RE.test(text);
+}
+
 export type EnforcerAction =
     | { type: "skip"; reason: "fresh" | "cooldown" | "no_human_msg" | "hook_pending" | "crashed" }
     | { type: "trigger_auto_wake_only" }

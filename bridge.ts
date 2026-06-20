@@ -22,6 +22,7 @@ import {
   decideReplyEnforcerAction,
   isMcpPermissionDialog,
   isNoopBotToBotAck,
+  isNonRoutableNoise,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -33,6 +34,7 @@ function log(msg: string) {
 }
 
 const WEBHOOK_PORT = parseInt(process.env.ECLAW_WEBHOOK_PORT || "18800", 10);
+const CODEX_COMMANDS_URL = process.env.ECLAW_CODEX_COMMANDS_URL || "http://127.0.0.1:18801/commands";
 const FAKECHAT_WS = process.env.FAKECHAT_WS || "ws://localhost:8787/ws";
 const API_KEY = process.env.ECLAW_API_KEY || "";
 const API_BASE = (process.env.ECLAW_API_BASE || "https://eclawbot.com").replace(/\/$/, "");
@@ -160,13 +162,97 @@ const pendingWatchdogs: Map<string, PendingWatchdog> = new Map(); // keyed by as
 let autoApproveMode = false;
 
 // ── Current model state ──
-let currentModel = process.env.CLAUDE_MODEL || "claude-sonnet-4-20250514";
+// #2 fleet policy is pinned to Opus 4.7 unless Hank explicitly changes it.
+// Treat smart-latest sentinels as the fleet default for the /model card label.
+const _envClaudeModel = (process.env.CLAUDE_MODEL || "").trim();
+let currentModel = ["", "latest", "auto", "default"].includes(_envClaudeModel.toLowerCase())
+  ? "claude-opus-4-7"
+  : _envClaudeModel;
 
-const MODEL_OPTIONS: Record<string, { label: string; model: string }> = {
-  sonnet:  { label: "⚡ Sonnet",  model: "claude-sonnet-4-20250514" },
-  opus:    { label: "🧠 Opus",    model: "claude-opus-4-20250514" },
-  haiku:   { label: "🪶 Haiku",   model: "claude-haiku-4-20250514" },
+type ModelOption = { label: string; model: string };
+
+// Curated model fallback. Opus 4.7 is the #2 fleet default
+// (CLAUDE_MODEL=claude-opus-4-7).
+const FALLBACK_MODEL_OPTIONS: Record<string, ModelOption> = {
+  fable:  { label: "🔮 Fable 5",   model: "claude-fable-5" },
+  opus:   { label: "🧠 Opus 4.7",  model: "claude-opus-4-7" },
+  sonnet: { label: "⚡ Sonnet 4.6", model: "claude-sonnet-4-6" },
+  haiku:  { label: "🪶 Haiku 4.5",  model: "claude-haiku-4-5" },
 };
+
+let MODEL_OPTIONS: Record<string, ModelOption> = { ...FALLBACK_MODEL_OPTIONS };
+
+const MODEL_FAMILY_META: Record<string, { key: string; icon: string }> = {
+  fable:  { key: "fable",  icon: "🔮" },
+  opus:   { key: "opus",   icon: "🧠" },
+  sonnet: { key: "sonnet", icon: "⚡" },
+  haiku:  { key: "haiku",  icon: "🪶" },
+};
+
+// Smartly import the latest models for the /model rich card.
+// Resolution order:
+//   1. CLAUDE_MODEL_OPTIONS env (JSON array of {key,label,model}) — explicit override
+//   2. Live Anthropic /v1/models lookup (only when an API key is configured),
+//      picking the newest id per opus/sonnet/haiku family
+//   3. Curated FALLBACK_MODEL_OPTIONS
+// Best-effort and non-fatal: any failure keeps the previous/fallback list.
+async function refreshModelOptions(): Promise<void> {
+  // 1) Explicit operator override
+  const raw = process.env.CLAUDE_MODEL_OPTIONS;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Array<{ key?: string; label?: string; model?: string }>;
+      const out: Record<string, ModelOption> = {};
+      for (const item of parsed) {
+        if (item?.key && item?.label && item?.model) out[item.key] = { label: item.label, model: item.model };
+      }
+      if (Object.keys(out).length) { MODEL_OPTIONS = out; return; }
+    } catch (e) {
+      log(`CLAUDE_MODEL_OPTIONS parse failed, falling back: ${e}`);
+    }
+  }
+
+  // 2) Live lookup of the latest models (requires an API key in the bridge env)
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4000);
+      const base = (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
+      const res = await fetch(`${base}/v1/models?limit=100`, {
+        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = (await res.json()) as { data?: Array<{ id: string; display_name?: string; created_at?: string }> };
+        const models = data.data || [];
+        const out: Record<string, ModelOption> = {};
+        for (const fam of Object.keys(MODEL_FAMILY_META)) {
+          // newest first: prefer created_at, else rely on API order
+          const matches = models
+            .filter(m => m.id.includes(fam))
+            .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+          const best = matches[0];
+          if (best) {
+            out[fam] = {
+              label: `${MODEL_FAMILY_META[fam].icon} ${best.display_name || best.id}`,
+              model: best.id,
+            };
+          }
+        }
+        if (Object.keys(out).length) { MODEL_OPTIONS = out; return; }
+      } else {
+        log(`Anthropic models lookup HTTP ${res.status}; using fallback model list`);
+      }
+    } catch (e) {
+      log(`Anthropic models lookup failed, using fallback: ${e}`);
+    }
+  }
+
+  // 3) Curated latest fallback
+  MODEL_OPTIONS = { ...FALLBACK_MODEL_OPTIONS };
+}
 
 // ── WebSocket connection to fakechat ──
 let ws: WebSocket | null = null;
@@ -804,6 +890,48 @@ Bun.serve({
       });
     }
 
+    if (url.pathname === "/commands") {
+      if (req.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+          },
+        });
+      }
+
+      if (req.method === "GET") {
+        const upstreamUrl = new URL(CODEX_COMMANDS_URL);
+        if (url.searchParams.get("refresh")) upstreamUrl.searchParams.set("refresh", url.searchParams.get("refresh") || "1");
+
+        try {
+          const upstream = await fetch(upstreamUrl, {
+            headers: { Accept: "application/json" },
+          });
+          const body = await upstream.text();
+          return new Response(body, {
+            status: upstream.status,
+            headers: {
+              "Content-Type": upstream.headers.get("Content-Type") || "application/json; charset=utf-8",
+              "Access-Control-Allow-Origin": "*",
+              "Cache-Control": "no-store",
+            },
+          });
+        } catch (err: any) {
+          log(`/commands proxy failed: ${err.message}`);
+          return Response.json(
+            { success: false, error: "commands_unavailable" },
+            {
+              status: 502,
+              headers: { "Access-Control-Allow-Origin": "*" },
+            },
+          );
+        }
+      }
+    }
+
     // ── POST /ask — long-poll PreToolUse hook integration ──
     if (req.method === "POST" && url.pathname === "/ask") {
       try {
@@ -913,6 +1041,55 @@ Bun.serve({
         return Response.json(result, { status: exitCode === 0 ? 200 : 500 });
       } catch (err: any) {
         log(`/restart error: ${err.message}`);
+        return Response.json({ ok: false, error: err.message }, { status: 500 });
+      }
+    }
+
+    // ── POST /self-repair — version-aware self-repair program (EClaw 重新綁定) ──
+    // Runs selfheal/self-repair.sh: detect-latest -> auto-install-latest -> repair ->
+    // health-verify -> idempotent /api/channel/bind re-bind sync-verify. Triggered by the
+    // EClaw dashboard 重新綁定 button (via /api/channel/self-repair) or the fleet monitor.
+    if (req.method === "POST" && url.pathname === "/self-repair") {
+      const authKey = req.headers.get("x-api-key") || req.headers.get("authorization")?.replace("Bearer ", "");
+      if (!authKey || authKey !== API_KEY) {
+        log("/self-repair rejected: invalid API key");
+        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+      }
+      try {
+        const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "selfheal", "self-repair.sh");
+        log("/self-repair invoked");
+        const proc = Bun.spawn(["bash", scriptPath], {
+          env: {
+            ...process.env,
+            ECLAW_API_KEY: API_KEY,
+            ECLAW_API_BASE: process.env.ECLAW_API_BASE || API_BASE,
+            ECLAW_WEBHOOK_URL: process.env.ECLAW_WEBHOOK_URL || "",
+            ECLAW_BOT_NAME: process.env.ECLAW_BOT_NAME || "",
+            ECLAW_ENTITY_ID: process.env.ECLAW_ENTITY_ID || "",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const timeout = setTimeout(() => proc.kill(), 150000);
+        const exitCode = await proc.exited;
+        clearTimeout(timeout);
+        const stdout = await new Response(proc.stdout).text();
+        const stderr = await new Response(proc.stderr).text();
+        log(`/self-repair completed: exit=${exitCode} stdout=${stdout.trim()}`);
+        if (stderr) log(`/self-repair stderr: ${stderr.trim()}`);
+        let result: any;
+        try {
+          result = JSON.parse(stdout.trim().split("\n").pop() || "{}");
+        } catch {
+          result = { ok: exitCode === 0, message: stdout.trim() };
+        }
+        // self-repair restarts Claude Code, so reconnect the WebSocket afterwards
+        log("Reconnecting WebSocket after self-repair...");
+        if (ws) ws.close();
+        setTimeout(connectWs, 2000);
+        return Response.json(result, { status: exitCode === 0 ? 200 : 500 });
+      } catch (err: any) {
+        log(`/self-repair error: ${err.message}`);
         return Response.json({ ok: false, error: err.message }, { status: 500 });
       }
     }
@@ -1070,11 +1247,26 @@ Bun.serve({
         log(
           `Sender hint: from="${fromStr}" → kind=${hintKind} entityId=${fromEntityId ?? "-"} publicCode=${fromPublicCode ?? "-"}`,
         );
-        lastSenderHint = {
-          kind: hintKind,
-          entityId: fromEntityId,
-          publicCode: fromPublicCode,
-        };
+        // ── Routing-target guard (2026-06-20 misroute fix) ──
+        // `lastSenderHint` is the single global the async reply path reads at
+        // send time. #6's status-heartbeat / FWD / bridge-error flood would
+        // otherwise overwrite it to {entity,6} between a real user's message
+        // and Claude finishing a long task, so Claude's status report to Hank
+        // routed to #6 ("害他在瞎忙"). Background bot noise must NOT hijack the
+        // reply target — keep the prior real sender (user / broadcast / genuine
+        // bot work) intact. See isNonRoutableNoise (only ever skips kind=entity,
+        // never a user/broadcast turn). card: routing-target-noise-guard.
+        if (isNonRoutableNoise(text, hintKind)) {
+          log(
+            `Routing-target preserved: noise from "${fromStr}" (kind=${hintKind}) did NOT overwrite lastSenderHint (kept kind=${lastSenderHint?.kind ?? "none"} entityId=${lastSenderHint?.entityId ?? "-"})`,
+          );
+        } else {
+          lastSenderHint = {
+            kind: hintKind,
+            entityId: fromEntityId,
+            publicCode: fromPublicCode,
+          };
+        }
 
         // Keep fleet health probes out of Claude's work queue. The delay lets
         // /api/client/speak finish writing its inbound echo before ACK updates
@@ -1130,6 +1322,7 @@ Bun.serve({
 
         if (userText === "/model" || userText === "/模型") {
           log(`/model command received from ${from}`);
+          await refreshModelOptions(); // smart-import latest models before rendering the card
           const ask_id = `model_select_${Date.now()}`;
           const currentLabel = Object.values(MODEL_OPTIONS).find(m => m.model === currentModel)?.label || currentModel;
           const card = {
