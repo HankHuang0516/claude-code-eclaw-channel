@@ -49,6 +49,25 @@ describe("isNonRoutableNoise — fleet noise must not hijack reply target", () =
         expect(isNonRoutableNoise(APPROVAL_REQ, "entity")).toBe(true);
     });
 
+    test("a #N_PERMISSION_HANDOFF forward is noise (card_c761be88)", () => {
+        // #6's openclaw/codex runtime auto-emits #N_PERMISSION_HANDOFF when a
+        // benign post-exec cleanup WARN ("Failed to terminate MCP process group
+        // N: Operation not permitted") is misread as a real exec blocker. The
+        // emitter is REMOTE (not this repo); this guard is routing-target hygiene
+        // so the flood can't hijack the reply target. NOTE: this fixture
+        // deliberately OMITS the "Bridge cutoff" line, so it is only classified
+        // by the new #N_PERMISSION_HANDOFF token — proving the hardening adds
+        // coverage the heartbeat alternatives don't.
+        const HANDOFF = `[📢 FWD from #6] #6_PERMISSION_HANDOFF
+- Blocker: Codex runtime output reported permission_or_login: WARN codex_rmcp_client::stdio_server_launcher: Failed to terminate MCP process group 91381: Operation not permitted (os error 1)
+- Next step: grant the required permission/login through an approved channel`;
+        expect(isNonRoutableNoise(HANDOFF, "entity")).toBe(true);
+        // a human who literally pastes the token is still never suppressed
+        expect(isNonRoutableNoise(HANDOFF, "user")).toBe(false);
+        // generalizes across entity numbers
+        expect(isNonRoutableNoise("[📢 FWD from #1] #1_PERMISSION_HANDOFF\n- Next step: grant", "entity")).toBe(true);
+    });
+
     test("noop bot-to-bot ack from an entity is noise", () => {
         expect(isNonRoutableNoise("[📢 FWD from #6] 了解。", "entity")).toBe(true);
         expect(isNonRoutableNoise("收到", "entity")).toBe(true);

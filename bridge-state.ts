@@ -433,9 +433,21 @@ export function isNoopBotToBotAck(
  *     genuine bot work (PR #N / merged / reviewed / ...) — and the heartbeat
  *     regexes below are anchored to the fleet's literal lifecycle phrasing, so
  *     a bot status update that merely mentions "heartbeat" in prose is unaffected.
+ *   - `#N_PERMISSION_HANDOFF`: #6's openclaw/codex runtime auto-emits this when
+ *     a benign post-exec cleanup WARN ("Failed to terminate MCP process group N:
+ *     Operation not permitted") is misread as a real exec blocker — a runtime-side
+ *     false alarm whose emitter is REMOTE (the process behind CODEX_COMMANDS_URL,
+ *     not this repo) and so not fixable here; the proper fix is upstream in #6's
+ *     runtime (strip that WARN before the "is this exec blocked?" test). Today the
+ *     flood already matches `Bridge cutoff`, but a handoff variant lacking that
+ *     line would slip through — so classify the distinctive `#N_PERMISSION_HANDOFF`
+ *     machine token directly (card_c761be88). This is routing-target hygiene only:
+ *     the message is still DELIVERED to the session (the /upload forward is
+ *     unconditional), it just never hijacks the reply target. A handoff that needs
+ *     a human still reaches the human via the un-addressed-reply path.
  */
 const FLEET_NOISE_RE =
-    /(?:\bstatus heartbeat\b|codex exec is still running|\bLast exec output\b|\bBridge cutoff\b|Bridge error:|is still processing the previous message|Codex requests command approval)/i;
+    /(?:\bstatus heartbeat\b|codex exec is still running|\bLast exec output\b|\bBridge cutoff\b|Bridge error:|is still processing the previous message|Codex requests command approval|#\d+_PERMISSION_HANDOFF)/i;
 
 export function isNonRoutableNoise(
     text: string,
