@@ -25,6 +25,7 @@ import {
   isNoopBotToBotAck,
   isNonRoutableNoise,
   chooseReplyHint,
+  mapTmuxStateToRuntimeState,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -137,6 +138,12 @@ let contextWarningLastSent = 0;
 let autoWakeTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAutoWakeSent = 0;
 
+// Runtime-state heartbeat state (card_35cb55fc). Tracks the last successfully
+// pushed runtimeState so transitions are logged once (not every tick), plus a
+// throttle so a missing/failing endpoint can't spam the log every interval.
+let lastPushedRuntimeState: string | null = null;
+let lastRuntimeHeartbeatErrLog = 0;
+
 // ── Self-check (2026-04-23 silent-failover fix) ──
 // EClaw's callback registration can become invalid silently (callback_token
 // overwritten by stray re-register, or server-side callback table expired/
@@ -150,6 +157,20 @@ const SELF_CHECK_ENABLED = (process.env.ECLAW_SELF_CHECK_ENABLED || "true") !== 
 const ECLAW_REGISTRATION_RETRY_ATTEMPTS = parseInt(process.env.ECLAW_REGISTRATION_RETRY_ATTEMPTS || "5", 10);
 const ECLAW_REGISTRATION_RETRY_DELAY_MS = parseInt(process.env.ECLAW_REGISTRATION_RETRY_DELAY_MS || "2000", 10);
 const TRANSIENT_ECLAW_API_RE = /(server starting up|too many requests|rate.?limit|HTTP 429|HTTP 5\d\d)/i;
+
+// ── Runtime-state heartbeat (card_35cb55fc — wallpaper activity redesign) ──
+// Forward the agent's REAL runtime activity to EClaw so the live wallpaper
+// reflects what the agent is actually doing. diagnoseTmuxState() already
+// classifies the tmux pane (busy / stuck_prompt / crashed / idle); we map it
+// to the runtimeState contract and POST it to /api/entity/heartbeat. The
+// backend trusts runtimeState only when fresh (≤45s), so we push on a short
+// cadence (default 12s) — any state transition surfaces within one tick.
+const RUNTIME_HEARTBEAT_ENABLED =
+  (process.env.ECLAW_RUNTIME_HEARTBEAT_ENABLED || "true") !== "false";
+const RUNTIME_HEARTBEAT_INTERVAL_S = parseInt(
+  process.env.ECLAW_RUNTIME_HEARTBEAT_INTERVAL_S || "12",
+  10,
+);
 // Track most recent channel message text so auto-wake nudge can tell
 // Claude WHICH message to reply to (not just "process pending")
 let lastPendingChannelMsg: string | null = null;
@@ -494,6 +515,66 @@ async function diagnoseTmuxState(): Promise<string> {
   } catch {
     // tmux not available or errored — can't diagnose
     return "busy";
+  }
+}
+
+/**
+ * card_35cb55fc (wallpaper activity-state redesign): push the agent's REAL
+ * runtime activity to EClaw so the live wallpaper reflects what the agent is
+ * actually doing, instead of inferring liveness purely from lastSendAt.
+ *
+ * Reuses the SAME diagnoseTmuxState() classifier the watchdog/auto-wake/reply
+ * enforcer already trust, maps it to the runtimeState contract value, and POSTs
+ * it to the existing /api/entity/heartbeat endpoint with the bridge's in-process
+ * credentials (deviceId + entityId + botSecret from the channel bind — no new
+ * secret is introduced or logged). The backend trusts runtimeState only when
+ * fresh (≤45s); the caller pushes on a short cadence so transitions surface
+ * within one tick.
+ *
+ * Best-effort + fully isolated: any failure is swallowed (with throttled
+ * logging) so a missing/slow heartbeat endpoint never affects message routing.
+ */
+async function pushRuntimeStateHeartbeat() {
+  if (!RUNTIME_HEARTBEAT_ENABLED) return;
+  // Need a completed channel bind (device + entity + secret) before the backend
+  // can attribute the heartbeat. Skip silently until registration finishes.
+  if (!lastDeviceId || lastEntityId === null || !botSecret) return;
+
+  const tmuxState = await diagnoseTmuxState();
+  const runtimeState = mapTmuxStateToRuntimeState(tmuxState);
+  const transitioned = runtimeState !== lastPushedRuntimeState;
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/entity/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceId: lastDeviceId,
+        entityId: lastEntityId,
+        botSecret,
+        runtimeState,
+      }),
+    });
+    if (resp.ok) {
+      if (transitioned) {
+        log(
+          `Runtime heartbeat: ${lastPushedRuntimeState ?? "(none)"} → ${runtimeState} (tmux=${tmuxState})`,
+        );
+      }
+      lastPushedRuntimeState = runtimeState;
+    } else {
+      const now = Date.now();
+      if (now - lastRuntimeHeartbeatErrLog > 5 * 60_000) {
+        lastRuntimeHeartbeatErrLog = now;
+        log(`Runtime heartbeat POST failed: HTTP ${resp.status} (throttled, next log ≥5min)`);
+      }
+    }
+  } catch (err: any) {
+    const now = Date.now();
+    if (now - lastRuntimeHeartbeatErrLog > 5 * 60_000) {
+      lastRuntimeHeartbeatErrLog = now;
+      log(`Runtime heartbeat error: ${err.message} (throttled, next log ≥5min)`);
+    }
   }
 }
 
@@ -905,6 +986,10 @@ Bun.serve({
         lastSelfCheckAge: lastSelfCheckAt ? Math.round((Date.now() - lastSelfCheckAt) / 1000) : null,
         registrationReady: lastDeviceId !== null && lastEntityId !== null && botSecret !== null,
         registeredEntityId: lastEntityId,
+        // card_35cb55fc wallpaper activity redesign — runtime-state heartbeat
+        runtimeHeartbeatEnabled: RUNTIME_HEARTBEAT_ENABLED,
+        runtimeHeartbeatIntervalSeconds: RUNTIME_HEARTBEAT_INTERVAL_S,
+        lastPushedRuntimeState,
         // 2026-04-27 zombie /ask fix
         pendingAsks: pendingAsks.size,
         askTtlMin: ASK_TTL_MS / 60_000,
@@ -1506,6 +1591,22 @@ if (SELF_CHECK_ENABLED) {
     );
   }, SELF_CHECK_MIN * 60_000);
   log(`Self-check enabled: every ${SELF_CHECK_MIN} min`);
+}
+
+// ── Runtime-state heartbeat (card_35cb55fc — wallpaper activity redesign) ──
+// Push the agent's real tmux-classified activity (busy/stuck/crashed/idle) to
+// EClaw's /api/entity/heartbeat on a short cadence so the live wallpaper shows
+// what the agent is actually doing. Cadence (default 12s) stays well inside the
+// backend's 45s freshness window, so a state transition surfaces within one
+// tick. Runs independently of the 60s combined tick because that's too slow to
+// keep the heartbeat fresh.
+if (RUNTIME_HEARTBEAT_ENABLED) {
+  setInterval(() => {
+    pushRuntimeStateHeartbeat().catch((err) =>
+      log(`Runtime heartbeat tick error: ${err.message}`),
+    );
+  }, RUNTIME_HEARTBEAT_INTERVAL_S * 1000);
+  log(`Runtime-state heartbeat enabled: every ${RUNTIME_HEARTBEAT_INTERVAL_S}s`);
 }
 
 // ── Context pressure monitor (2026-04-21 incident fix) ──
