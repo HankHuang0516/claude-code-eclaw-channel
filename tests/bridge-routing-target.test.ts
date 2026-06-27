@@ -149,4 +149,44 @@ describe("chooseReplyHint — un-addressed reply goes to the human principal", (
         const hint = chooseReplyHint("done — see report@card for details", USER_HINT, BOT6_HINT);
         expect(hint).toBe(USER_HINT);
     });
+
+    // ── Defect 1 (card_2ee0afbb): regex case-sensitivity at the reply seam ──
+    // Server publicCodes are lowercase-only `[a-z0-9]{6}`. A reply that leads
+    // with an UPPERCASE 6-char token is NOT a real mention, so it is an
+    // un-addressed reply that must route to the human — not be mistaken for an
+    // explicit mention and kept on the bot hint. The old `/i` flag flipped this.
+    test("a reply leading with an UPPERCASE fake code is un-addressed → routes to the human, not the bot", () => {
+        expect(chooseReplyHint("@YRT82N looks fixed", USER_HINT, BOT6_HINT)).toBe(USER_HINT);
+        expect(chooseReplyHint("@AbCdEf mixed-case noise", USER_HINT, BOT6_HINT)).toBe(USER_HINT);
+    });
+
+    test("@all stays case-insensitive at the reply seam: @ALL keeps the bot/broadcast hint", () => {
+        // @ALL is still an explicit routing token → mention layer routes it.
+        expect(chooseReplyHint("@ALL broadcast", USER_HINT, BOT6_HINT)).toBe(BOT6_HINT);
+    });
+
+    // ── Defect 3 (card_2ee0afbb): multi-human staleness hardening ──
+    // The "un-addressed reply NEVER routes to a bot" invariant must hold even
+    // if the lastUserHint slot is contaminated with an entity hint (e.g. a
+    // stale/mis-classified hint leaking through when multiple principals
+    // interleave during a long task). The pure function enforces it now,
+    // independent of caller discipline.
+    test("an entity hint that leaks into the lastUserHint slot does NOT route an un-addressed reply to a bot", () => {
+        // Both slots hold bots → an un-addressed reply must resolve to nobody.
+        expect(chooseReplyHint("status: done", BOT6_HINT, BOT6_HINT)).toBeNull();
+        const BOT1_HINT = { kind: "entity" as const, entityId: 1, publicCode: "abc123" };
+        expect(chooseReplyHint("status update", BOT1_HINT, BOT6_HINT)).toBeNull();
+    });
+
+    test("freshest human wins: a later human turn overwrites the lastUserHint the reply resolves to", () => {
+        // Two human principals interleave; the caller updates lastUserHint to the
+        // most-recent human turn (HANK_B). An un-addressed reply resolves to that
+        // current human, never to the bot work that arrived in between.
+        const HANK_A = { kind: "user" as const, entityId: undefined, publicCode: null };
+        const HANK_B = { kind: "broadcast" as const, entityId: undefined, publicCode: null };
+        // After: A asks → #6 work → B asks (lastUserHint=B, lastSenderHint=B).
+        expect(chooseReplyHint("done", HANK_B, HANK_B)).toBe(HANK_B);
+        // A bot turn arriving last does not divert the un-addressed reply.
+        expect(chooseReplyHint("done", HANK_B, BOT6_HINT)).toBe(HANK_B);
+    });
 });

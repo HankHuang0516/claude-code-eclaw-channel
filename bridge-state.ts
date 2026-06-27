@@ -461,11 +461,18 @@ export function isNonRoutableNoise(
 
 /**
  * Leading routing token in Claude's OWN reply text: `@#5`, `@31tlkr`, `@all`
- * (case-insensitive for `@all`). Mirrors eclaw-sender's LEADING_MENTION_RE.
+ * (case-insensitive for `@all` only). Mirrors eclaw-sender's LEADING_MENTION_RE.
  * When present, the server's @-mention auto-router (priority 2) decides the
  * target, so senderHint (priority 3) is moot.
+ *
+ * Case matters: server publicCodes are lowercase-only `[a-z0-9]{6}` (see
+ * eclaw-sender's LEADING_MENTION_RE note). A blanket `/i` made `@ABCDEF`
+ * (no such uppercase code exists) look like an explicit mention, so an
+ * un-addressed reply that happened to start with an uppercase 6-char token
+ * was wrongly kept on the bot hint instead of routing to the human. Match the
+ * code in its real lowercase form; keep ONLY `@all` case-insensitive.
  */
-const REPLY_LEADING_MENTION_RE = /^@(?:#\d+|[a-z0-9]{6}|all)\b/i;
+const REPLY_LEADING_MENTION_RE = /^@(?:#\d+|[a-z0-9]{6}|[Aa][Ll][Ll])\b/;
 
 /**
  * Second-layer routing guard (2026-06-20 follow-up). The noise guard stops
@@ -512,6 +519,21 @@ export function chooseReplyHint(
         return lastSenderHint;
     }
     // Un-addressed reply → human principal, or nobody. NEVER a bot.
+    //
+    // Multi-human staleness hardening (card_2ee0afbb defect 3): the
+    // `lastUserHint` slot is a single module-global that the caller overwrites
+    // on every user/broadcast inbound. The "never a bot" invariant currently
+    // rests ENTIRELY on the caller only ever storing a user/broadcast hint
+    // there. When several principals interleave during a long task (multiple
+    // humans + bot work all racing to mutate the globals), a stale or
+    // mis-classified entity hint that leaks into this slot would, without a
+    // guard here, re-route an un-addressed reply straight to a bot — exactly
+    // the 2026-06-20 misroute this whole module exists to prevent. Enforce the
+    // contract inside the pure function: an un-addressed reply resolves only to
+    // a human (user/broadcast) or to nobody (null), regardless of caller state.
+    if (lastUserHint && lastUserHint.kind !== "user" && lastUserHint.kind !== "broadcast") {
+        return null;
+    }
     return lastUserHint;
 }
 
