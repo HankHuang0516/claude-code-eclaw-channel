@@ -62,6 +62,49 @@ export function classifyTmuxScreen(
 }
 
 /**
+ * Contract value forwarded to EClaw's `POST /api/entity/heartbeat`
+ * `runtimeState` field, consumed by the wallpaper activity-state redesign
+ * (card_35cb55fc). The backend trusts the value only when fresh (≤45s), so
+ * the bridge re-pushes it on a short cadence (see bridge.ts heartbeat timer).
+ */
+export type RuntimeState = "busy" | "stuck" | "crashed" | "idle";
+
+/**
+ * Map the internal tmux classifier state to the EClaw `runtimeState` contract
+ * (card_35cb55fc, coordinated with the EClaw-backend receiver agent):
+ *
+ *   busy         → "busy"     agent actively thinking / running a tool
+ *                             ("esc to interrupt" footer on screen)
+ *   stuck_prompt → "stuck"    a confirm / permission box is blocking the turn
+ *   crashed      → "crashed"  empty / unrecognizable screen
+ *   idle         → "idle"     prompt marker on screen, nothing running
+ *   hook_pending → "stuck"    a PreToolUse /ask card is awaiting the human's
+ *                             click — the agent is blocked on a human decision,
+ *                             a "needs attention" state; "stuck" is the closest
+ *                             of the four contract values (hook_pending has no
+ *                             dedicated value in the contract).
+ *
+ * Accepts a raw string (diagnoseTmuxState is typed `Promise<string>` and may
+ * return "busy" on a tmux read error) and defaults any unknown value to
+ * "busy" — a safe fail-direction (the agent is assumed to be doing something
+ * rather than wrongly shown idle/crashed on the wallpaper).
+ */
+export function mapTmuxStateToRuntimeState(state: string): RuntimeState {
+    switch (state) {
+        case "stuck_prompt":
+        case "hook_pending":
+            return "stuck";
+        case "crashed":
+            return "crashed";
+        case "idle":
+            return "idle";
+        case "busy":
+        default:
+            return "busy";
+    }
+}
+
+/**
  * Detects the github-computer MCP permission dialog, which has a required
  * "Allow access for this session?" dropdown that must be filled before the
  * Accept button can be pressed.
