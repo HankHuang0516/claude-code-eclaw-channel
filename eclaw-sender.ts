@@ -54,8 +54,17 @@ function shouldRetryReply(status: number, body: string): boolean {
  * Match a leading routing token: `@#5`, `@31tlkr`, `@all` (case-insensitive
  * for `@all` only). Used to detect whether Claude already prepended the
  * routing token so we don't double-inject.
+ *
+ * Case-sensitivity matters for routing correctness: server publicCodes are
+ * generated from `abcdefghijklmnopqrstuvwxyz0123456789` (strictly lowercase
+ * a-z0-9, see backend/index.js generatePublicCode + mention-parser.js's
+ * non-`/i` `[a-z0-9]{6}` token regexes), so an uppercase token like `@ABCDEF`
+ * is NOT a real publicCode. A blanket `/i` flag made the 6-char alt match
+ * uppercase too, so `@ABCDEF reply` was wrongly treated as already-routed and
+ * the real `@publicCode` was never prepended. Match `#\d+` and the 6-char code
+ * in their real lowercase form; keep ONLY `@all` case-insensitive.
  */
-const LEADING_MENTION_RE = /^@(?:#\d+|[a-z0-9]{6}|all)\b/i;
+const LEADING_MENTION_RE = /^@(?:#\d+|[a-z0-9]{6}|[Aa][Ll][Ll])\b/;
 
 /**
  * Auto-prepend `@<publicCode> ` to text when sender is another bot entity

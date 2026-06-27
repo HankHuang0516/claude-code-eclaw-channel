@@ -258,6 +258,36 @@ describe("applyOutboundMention", () => {
     });
     expect(out).toBe("   @wjkzxz spaced");
   });
+
+  // ── Defect 1 (card_2ee0afbb): regex case-sensitivity ──
+  // Server publicCodes are lowercase-only `[a-z0-9]{6}`, so an uppercase 6-char
+  // token like `@WJKZXZ` is NOT a real routing token. The old blanket `/i` flag
+  // wrongly matched it as already-routed and skipped prepending the real
+  // @publicCode, so a bot-to-bot reply could lose its routing token.
+  test("prepends @publicCode even when text leads with an UPPERCASE fake code (no real uppercase publicCode exists)", () => {
+    const out = applyOutboundMention("@WJKZXZ not a real code", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("@wjkzxz @WJKZXZ not a real code");
+  });
+
+  test("prepends @publicCode for a mixed-case fake code too", () => {
+    const out = applyOutboundMention("@WjKzXz mixed case", {
+      kind: "entity",
+      entityId: 1,
+      publicCode: "wjkzxz",
+    });
+    expect(out).toBe("@wjkzxz @WjKzXz mixed case");
+  });
+
+  test("@all stays case-insensitive: @ALL / @All are still recognized as routed", () => {
+    const hint = { kind: "entity" as const, entityId: 1, publicCode: "wjkzxz" };
+    expect(applyOutboundMention("@ALL heads up", hint)).toBe("@ALL heads up");
+    expect(applyOutboundMention("@All heads up", hint)).toBe("@All heads up");
+    expect(applyOutboundMention("@all heads up", hint)).toBe("@all heads up");
+  });
 });
 
 // ── senderHint pass-through into request payloads ────────────────────────────
