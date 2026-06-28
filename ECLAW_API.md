@@ -868,3 +868,49 @@ Auth: botSecret
 Auth: botSecret
   exec: curl -s "https://eclawbot.com/api/mission/cards/summary?deviceId=DEVICE_ID&botSecret=BOT_SECRET&entityId=ENTITY_ID"
 Returns column counts, recent activity, and automation stats.
+
+
+==============================
+  WRITE DISCIPLINE & GOTCHAS
+==============================
+
+Hard-won rules for WRITING to the EClaw API (POST/PUT/DELETE). Ignoring these
+caused silent failures + a wrong root-cause conclusion on 2026-06-28
+(investigation card_99187c88; Railway monitor母卡 card_d473b36f).
+
+1. WRITES MUST USE curl (or a non-blocklisted User-Agent).
+   `python-urllib` (default UA `Python-urllib/3.x`) gets `403 error code 1010`
+   from Cloudflare — an EDGE block, NOT an auth/backend/permission error (the
+   backend never sees the request). Build the JSON payload in any language, but
+   SEND it with curl (`curl --data @payload.json`), or set an explicit header
+   `User-Agent: curl/8.4.0`. GETs and curl-issued POST/PUT/DELETE all work.
+
+2. EVERY WRITE → READ-BACK VERIFY.
+   After any write (kanban comment/card/move/schedule, card description/SOP edit,
+   device-vars), re-GET the resource and confirm the change actually persisted.
+   A non-2xx response (especially 1010) OR an unchanged read = the write FAILED.
+   Never report success without the read-back. 口訣: 沒 read-back 確認 = 沒改成.
+
+3. CF `1010` ≠ auth failure ≠ "endpoint forbids this".
+   It is a User-Agent / bot edge block. Re-test the EXACT same request with curl
+   before concluding the platform forbids the operation. (Mis-reading 1010 as a
+   platform limitation produced a false "agents can't edit母卡 SOPs" conclusion.)
+
+4. DON'T HARDCODE ROTATING SECRET KEY *NAMES* in automation SOPs.
+   Vault keys with date suffixes (e.g. `RAILWAY_ECLAE_0616`) get rotated
+   (`0616`→`0617`→…). A hardcoded name silently breaks every spawn after a
+   rotation. Resolve by a STABLE prefix and take the newest suffix, e.g.:
+     ks = sorted(k for k in vars if k.startswith('RAILWAY_ECLAE_')); key = ks[-1]
+   On rotation just add the new dated key to the vault — no SOP edit needed.
+
+5. AUTOMATION CARD EDITS ARE SNAPSHOT-AT-SPAWN.
+   A spawned child card's description is a byte-for-byte COPY of the parent母卡's
+   description at spawn time. Editing the母卡 only affects FUTURE children;
+   already-spawned children keep their frozen snapshot (no retro-update). Plan
+   fixes accordingly (fix the母卡 to stop the bleeding; existing children won't
+   self-heal).
+
+6. SECRETS TRAVEL IN HEADERS, NOT URLS.
+   Portal/refs clients send `X-Device-Secret` / `X-Bot-Secret` headers; secrets
+   must never land in URL query strings (they leak into logs/referrers). When in
+   doubt, assert no `deviceSecret=`/`botSecret=` substring in any request URL.
