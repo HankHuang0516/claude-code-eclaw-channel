@@ -58,14 +58,47 @@ check_fakechat_process() {
   ps -p "$pid" -ww -o command= 2>/dev/null | grep -Eq 'bun( |.*/)?server\.ts'
 }
 
+# ── Smart model resolution (#2 智慧默認使用最新模型) ──────────────────────────
+# resolve_latest_model: the newest/most-capable model id. Source of truth =
+# model-policy.json "latest"[0]; if ANTHROPIC_API_KEY is set, prefer the live newest id
+# of that family from /v1/models. Always returns a concrete, non-empty id.
+resolve_latest_model() {
+  local pol="$CHANNEL_DIR/model-policy.json" first=""
+  [ -f "$pol" ] && first="$(python3 -c "import json;l=json.load(open('$pol')).get('latest',[]);print(l[0] if l else '')" 2>/dev/null)"
+  if [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -n "$first" ]; then
+    local fam live
+    fam="$(printf '%s' "$first" | sed -E 's/^claude-([a-z]+).*/\1/')"
+    live="$(curl -sf --max-time 4 'https://api.anthropic.com/v1/models?limit=100' \
+      -H "x-api-key: $ANTHROPIC_API_KEY" -H 'anthropic-version: 2023-06-01' 2>/dev/null \
+      | python3 -c "import sys,json;d=json.load(sys.stdin).get('data',[]);ms=[m for m in d if '$fam' in m.get('id','')];ms.sort(key=lambda m:m.get('created_at',''),reverse=True);print(ms[0]['id'] if ms else '')" 2>/dev/null)"
+    [ -n "$live" ] && first="$live"
+  fi
+  printf '%s' "${first:-claude-opus-4-7}"
+}
+
+# resolve_model_candidates: ordered launch candidates (one per line). An explicit pin yields
+# just that model; a sentinel (latest/auto/default/empty) yields the full ordered latest[]
+# list so the launch falls through to a working model if the newest is unavailable. Strips
+# any [..] context suffix (zsh-glob-unsafe in the unquoted launch).
+resolve_model_candidates() {
+  local m; m="$(printf '%s' "${CLAUDE_MODEL:-}" | tr '[:upper:]' '[:lower:]')"
+  if [ -n "${CLAUDE_MODEL:-}" ] && [ "$m" != latest ] && [ "$m" != auto ] && [ "$m" != default ]; then
+    printf '%s\n' "${CLAUDE_MODEL%%[[]*}"
+    return
+  fi
+  local pol="$CHANNEL_DIR/model-policy.json"
+  [ -f "$pol" ] && python3 -c "import json;[print(str(x).split('[')[0]) for x in json.load(open('$pol')).get('latest',[])]" 2>/dev/null
+  printf '%s\n' "claude-opus-4-7"   # ultimate known-good fallback (deduped at launch)
+}
+
 # ── Mode: --smart (default), --force, --bridge-only ──
 MODE="${1:---smart}"
 
 load_channel_env
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
-CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-20250514}"
-CLAUDE_ARGS="--dangerously-skip-permissions --model $CLAUDE_MODEL"
-log "restart-channel.sh invoked with mode=$MODE"
+# #2 fleet policy: default to Opus 4.7 unless Hank explicitly changes the pin.
+CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-7}"
+log "restart-channel.sh invoked with mode=$MODE (model=$CLAUDE_MODEL)"
 if [ -z "${ECLAW_API_KEY:-}" ]; then
   log "ERROR: ECLAW_API_KEY is not set; create $CHANNEL_DIR/.env or export it before restart"
   json_out "false" "missing_env" "ECLAW_API_KEY is not set"
@@ -158,39 +191,60 @@ fi
 # to verify it's the NEW instance, not a stale one. The port-clear
 # check above ensures the new fakechat is spawned fresh.
 
-# Create new tmux session and launch Claude Code
-log "Creating tmux session $TMUX_SESSION and launching Claude Code..."
-tmux new-session -d -s "$TMUX_SESSION" -c "$CHANNEL_DIR"
-sleep 1
+# Launch Claude Code, trying each candidate model until fakechat comes up.
+# #2 智慧默認使用最新模型: a sentinel CLAUDE_MODEL expands to the ordered latest[] list, so the
+# newest model is used when available and a missing/unavailable newest model never bricks #2 —
+# the loop falls through to the next candidate (ending at the known-good fallback).
+launched_model=""
+seen_models=" "
+for CAND in $(resolve_model_candidates); do
+  [ -z "$CAND" ] && continue
+  case "$seen_models" in *" $CAND "*) continue ;; esac
+  seen_models="$seen_models$CAND "
 
-# Launch Claude Code with the channel plugin
-tmux send-keys -t "$TMUX_SESSION" \
-  "$CLAUDE_BIN $CLAUDE_ARGS --channels plugin:fakechat@claude-plugins-official" Enter
-
-# Wait for fakechat to come back online. Note: HTTP 200 only means the
-# HTTP server bound to 8787 — it does NOT guarantee the MCP-to-Claude
-# pipe is alive. After /model restart, if the old orphan fakechat was
-# the one holding 8787 (cleanup above should prevent this, but just
-# in case), HTTP would respond but Claude's `reply` tool would be
-# unusable. An extra check: verify the bun process running server.ts
-# is a child of the new tmux-spawned Claude Code, not a leftover.
-log "Waiting for fakechat to start (max ${MAX_WAIT}s)..."
-WAITED=0
-while [ $WAITED -lt $MAX_WAIT ]; do
-  sleep 3
-  WAITED=$((WAITED + 3))
-  if check_fakechat; then
-    # Also check that a fakechat bun process exists (started by new Claude Code)
-    if check_fakechat_process; then
-      log "fakechat is back online after ${WAITED}s (HTTP OK + bun process up)"
-      json_out "true" "restarted" "Claude Code restarted successfully in ${WAITED}s"
-      exit 0
-    else
-      log "fakechat HTTP responds but no bun process — retrying..."
-    fi
+  log "Creating tmux session $TMUX_SESSION and launching Claude Code (model=$CAND)..."
+  # Clean slate for each attempt (a failed launch can orphan fakechat on 8787).
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  sleep 1
+  RETRY_PORT_HOLDERS=$(lsof -iTCP:8787 -sTCP:LISTEN -t 2>/dev/null || true)
+  if [ -n "$RETRY_PORT_HOLDERS" ]; then
+    # shellcheck disable=SC2086
+    kill $RETRY_PORT_HOLDERS 2>/dev/null || true
+    sleep 1
+    # shellcheck disable=SC2086
+    kill -9 $RETRY_PORT_HOLDERS 2>/dev/null || true
   fi
+
+  tmux new-session -d -s "$TMUX_SESSION" -c "$CHANNEL_DIR"
+  sleep 1
+  tmux send-keys -t "$TMUX_SESSION" \
+    "$CLAUDE_BIN --dangerously-skip-permissions --model $CAND --channels plugin:fakechat@claude-plugins-official --settings '{\"ultracode\": true}'" Enter
+
+  # Wait for fakechat. HTTP 200 alone is insufficient (could be a stale orphan) — also
+  # require the bun server.ts process, confirming the new Claude Code spawned it.
+  log "Waiting for fakechat to start (max ${MAX_WAIT}s) on model $CAND..."
+  WAITED=0
+  while [ $WAITED -lt $MAX_WAIT ]; do
+    sleep 3
+    WAITED=$((WAITED + 3))
+    if check_fakechat && check_fakechat_process; then
+      launched_model="$CAND"
+      break
+    fi
+  done
+
+  if [ -n "$launched_model" ]; then
+    log "fakechat is back online after ${WAITED}s on model $launched_model (HTTP OK + bun process up)"
+    break
+  fi
+  log "model $CAND did not bring fakechat up within ${MAX_WAIT}s; trying next candidate"
 done
 
-log "fakechat did not come back within ${MAX_WAIT}s"
-json_out "false" "timeout" "Claude Code restart timed out after ${MAX_WAIT}s. fakechat not responding."
+if [ -n "$launched_model" ]; then
+  json_out "true" "restarted" "Claude Code restarted on model $launched_model"
+  exit 0
+fi
+
+log "no candidate model brought fakechat up"
+json_out "false" "timeout" "Claude Code restart timed out; no candidate model started fakechat."
 exit 1

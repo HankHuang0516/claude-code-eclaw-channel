@@ -735,6 +735,25 @@ function startWatchdogTimer() {
     const diagnosis = await diagnoseTmuxState();
     log(`Watchdog fired after ${WATCHDOG_TIMEOUT_S}s — diagnosis: ${diagnosis}`);
 
+    // ── Wedge auto-heal kick (durable fix for #2 mid-work wedges, 2026-06-24) ──
+    // The Opus 4.8 cyber-flag wedge and stuck-session wedge both surface here as
+    // repeated "idle" diagnoses whose re-inject nudge just re-trips the wedge —
+    // #2 then sits silent for hours while passive-health stays GREEN (false-green).
+    // launchd can't host a watchdog (no Full Disk Access to ~/Desktop), but THIS
+    // bridge runs from the repo with full access and is relaunched on reboot, so it
+    // is the correct scheduler. Fire-and-forget the repo's wedge-watchdog on every
+    // watchdog tick; the script self-gates (only repairs a genuine wedge, with
+    // cooldown + anti-loop) so this is a no-op when #2 is merely busy. It converts a
+    // multi-hour silent outage into a ~2-minute auto-recovery. See selfheal/wedge-watchdog.sh.
+    try {
+      const { spawn } = await import("node:child_process");
+      const wd = join(dirname(fileURLToPath(import.meta.url)), "selfheal", "wedge-watchdog.sh");
+      const child = spawn("/bin/bash", [wd], { detached: true, stdio: "ignore" });
+      child.unref();
+    } catch (err: any) {
+      log(`wedge-watchdog kick failed: ${err?.message ?? err}`);
+    }
+
     switch (diagnosis) {
       case "stuck_prompt": {
         // Claude is stuck on a "Do you want to create/proceed" prompt.
