@@ -99,6 +99,21 @@ PANE="$(tmux capture-pane -t "$TMUX_SESSION" -p -S -80 2>/dev/null || true)"
 CYBER_FLAG=0
 echo "$PANE" | grep -q "safety measures that flagged this message for a cybersecurity topic" && CYBER_FLAG=1
 
+# ── Class 3 — credential/login expiry (added 2026-06-29) ──
+# Symptom: the eclaw-bot pane shows "Not logged in · Run /login" (often alongside a
+# "API Usage Billing" header) on EVERY turn — the macOS Keychain "Claude Code-credentials" OAuth
+# blob was wiped/expired (accessToken+refreshToken empty). HISTORY: self-repair USED to be futile
+# here (a fresh session re-read the same empty Keychain). FIXED 2026-06-29: restart-channel.sh now
+# runs selfheal/ensure-auth.sh first, which RESTORES the existing Claude Code key from a Keychain
+# backup (or ~/.claude/.credentials.json) and verifies it — so self-repair IS now effective for an
+# auth wipe. We therefore treat "Not logged in" as a wedge and let the normal heal flow run; it only
+# escalates if ensure-auth cannot reuse the key (refusing to relaunch a doomed session).
+NOT_LOGGED_IN=0
+if echo "$PANE" | grep -qiE "Not logged in|Run /login|Please run /login"; then
+  NOT_LOGGED_IN=1
+  log "Class 3 credential/login expiry detected (pane 'Not logged in') — self-repair will auto-restore the existing Claude Code key via ensure-auth.sh; proceeding to heal."
+fi
+
 # Is Claude visibly mid-turn? Claude Code shows a spinner glyph + "esc to interrupt" while a turn
 # is actively running. If so, it's (probably) doing legitimate long work — hold fire unless the
 # silence is egregious. NOTE: a FROZEN spinner (stuck compaction) also matches, which is why the
@@ -124,7 +139,9 @@ fi
 THRESHOLD="$NO_REPLY_MIN"; [ "$BUSY" -eq 1 ] && THRESHOLD="$BUSY_NO_REPLY_MIN"
 WEDGED=0
 REASON=""
-if [ "$CYBER_FLAG" -eq 1 ] && [ "$MINS_NO_REPLY" -ge 3 ]; then
+if [ "$NOT_LOGGED_IN" -eq 1 ]; then
+  WEDGED=1; REASON="Class 3 credential/login expiry (pane 'Not logged in') — self-repair auto-restores the Claude Code key via ensure-auth.sh"
+elif [ "$CYBER_FLAG" -eq 1 ] && [ "$MINS_NO_REPLY" -ge 3 ]; then
   WEDGED=1; REASON="cyber-flag in pane + no reply ${MINS_NO_REPLY}m (Class 2 Opus 4.8 safety wedge)"
 elif [ "$RECENT_INBOUND" -eq 1 ] && [ "$MINS_NO_REPLY" -ge "$THRESHOLD" ]; then
   WEDGED=1; REASON="inbound traffic but no forwarded reply for ${MINS_NO_REPLY}m (busy=$BUSY, threshold ${THRESHOLD}m; stuck session)"

@@ -58,6 +58,18 @@ check_fakechat_process() {
   ps -p "$pid" -ww -o command= 2>/dev/null | grep -Eq 'bun( |.*/)?server\.ts'
 }
 
+# Poll until nothing holds the fakechat port (8787) so a fresh launch's server.ts can bind cleanly.
+# Returns non-zero if it never frees within the window.
+wait_port_free() {
+  local i=0
+  while [ $i -lt 15 ]; do
+    lsof -iTCP:8787 -sTCP:LISTEN -t >/dev/null 2>&1 || return 0
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # ── Smart model resolution (#2 智慧默認使用最新模型) ──────────────────────────
 # resolve_latest_model: the newest/most-capable model id. Source of truth =
 # model-policy.json "latest"[0]; if ANTHROPIC_API_KEY is set, prefer the live newest id
@@ -195,50 +207,91 @@ fi
 # #2 智慧默認使用最新模型: a sentinel CLAUDE_MODEL expands to the ordered latest[] list, so the
 # newest model is used when available and a missing/unavailable newest model never bricks #2 —
 # the loop falls through to the next candidate (ending at the known-good fallback).
+# ── Auth guard: REUSE the existing Claude Code key before launching ──
+# Guarantee the CLI is logged in first, restoring the credential from the Keychain backup (or
+# ~/.claude/.credentials.json) if the primary was wiped. Refuse to launch a "Not logged in" zombie
+# (which the bridge would mask by forwarding "⏳ Processing..." as a real reply → false-green). See
+# selfheal/ensure-auth.sh. Bypass with SKIP_AUTH_GUARD=1 only when auth is already known-good.
+if [ "${SKIP_AUTH_GUARD:-0}" != "1" ] && [ -f "$CHANNEL_DIR/selfheal/ensure-auth.sh" ]; then
+  if CLAUDE_BIN="$CLAUDE_BIN" bash "$CHANNEL_DIR/selfheal/ensure-auth.sh" >>/tmp/eclaw-restart.log 2>&1; then
+    log "auth guard: CLI authenticated (reusing existing Claude Code key)"
+  else
+    log "ERROR: auth guard failed — CLI not logged in and no reusable credential. NOT launching a doomed session."
+    json_out "false" "auth_unavailable" "Claude Code not logged in and no reusable key; run 'claude' + /login or set CLAUDE_CODE_OAUTH_TOKEN in .env, then retry"
+    exit 1
+  fi
+fi
+
+# Tear down any prior eclaw-bot session AND orphaned fakechat-channel claude processes (tmux
+# kill-session does NOT reap the bun MCP/server.ts children), then wait until port 8787 is fully
+# released so the next launch's server.ts can bind. A leftover here is exactly what made the resolver
+# walk all the way down to a fakechat-less Haiku (2026-06-29 incident).
+clean_slate() {
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  pkill -f "channels plugin:fakechat" 2>/dev/null || true
+  sleep 1
+  local holders
+  holders="$(lsof -iTCP:8787 -sTCP:LISTEN -t 2>/dev/null || true)"
+  if [ -n "$holders" ]; then
+    # shellcheck disable=SC2086
+    kill $holders 2>/dev/null || true
+    sleep 1
+    # shellcheck disable=SC2086
+    kill -9 $holders 2>/dev/null || true
+  fi
+  wait_port_free || log "WARN: port 8787 still held after cleanup; launch may race"
+}
+
+# Launch Claude Code, trying each candidate model until fakechat comes up. Each model gets a few
+# attempts because a missing fakechat is usually a transient server.ts spawn race (model-independent),
+# not a model problem — retrying the SAME model beats prematurely downgrading toward Haiku.
 launched_model=""
 seen_models=" "
+ATTEMPTS_PER_MODEL="${ATTEMPTS_PER_MODEL:-2}"
 for CAND in $(resolve_model_candidates); do
   [ -z "$CAND" ] && continue
   case "$seen_models" in *" $CAND "*) continue ;; esac
   seen_models="$seen_models$CAND "
 
-  log "Creating tmux session $TMUX_SESSION and launching Claude Code (model=$CAND)..."
-  # Clean slate for each attempt (a failed launch can orphan fakechat on 8787).
-  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-  sleep 1
-  RETRY_PORT_HOLDERS=$(lsof -iTCP:8787 -sTCP:LISTEN -t 2>/dev/null || true)
-  if [ -n "$RETRY_PORT_HOLDERS" ]; then
-    # shellcheck disable=SC2086
-    kill $RETRY_PORT_HOLDERS 2>/dev/null || true
+  attempt=0
+  while [ "$attempt" -lt "$ATTEMPTS_PER_MODEL" ]; do
+    attempt=$((attempt + 1))
+    log "Launching Claude Code (model=$CAND, attempt $attempt/$ATTEMPTS_PER_MODEL)..."
+    clean_slate
+    tmux new-session -d -s "$TMUX_SESSION" -c "$CHANNEL_DIR"
     sleep 1
-    # shellcheck disable=SC2086
-    kill -9 $RETRY_PORT_HOLDERS 2>/dev/null || true
-  fi
+    tmux send-keys -t "$TMUX_SESSION" \
+      "$CLAUDE_BIN --dangerously-skip-permissions --model $CAND --channels plugin:fakechat@claude-plugins-official --settings '{\"ultracode\": true}'" Enter
 
-  tmux new-session -d -s "$TMUX_SESSION" -c "$CHANNEL_DIR"
-  sleep 1
-  tmux send-keys -t "$TMUX_SESSION" \
-    "$CLAUDE_BIN --dangerously-skip-permissions --model $CAND --channels plugin:fakechat@claude-plugins-official --settings '{\"ultracode\": true}'" Enter
-
-  # Wait for fakechat. HTTP 200 alone is insufficient (could be a stale orphan) — also
-  # require the bun server.ts process, confirming the new Claude Code spawned it.
-  log "Waiting for fakechat to start (max ${MAX_WAIT}s) on model $CAND..."
-  WAITED=0
-  while [ $WAITED -lt $MAX_WAIT ]; do
-    sleep 3
-    WAITED=$((WAITED + 3))
-    if check_fakechat && check_fakechat_process; then
-      launched_model="$CAND"
-      break
-    fi
+    # Wait for fakechat. HTTP 200 alone is insufficient (could be a stale orphan) — also
+    # require the bun server.ts process, confirming the new Claude Code spawned it.
+    log "Waiting for fakechat to start (max ${MAX_WAIT}s) on model $CAND..."
+    WAITED=0
+    while [ $WAITED -lt $MAX_WAIT ]; do
+      sleep 3
+      WAITED=$((WAITED + 3))
+      if check_fakechat && check_fakechat_process; then
+        launched_model="$CAND"
+        break
+      fi
+    done
+    if [ -n "$launched_model" ]; then break; fi
+    log "model $CAND attempt $attempt did not bring fakechat up within ${MAX_WAIT}s"
   done
 
   if [ -n "$launched_model" ]; then
     log "fakechat is back online after ${WAITED}s on model $launched_model (HTTP OK + bun process up)"
     break
   fi
-  log "model $CAND did not bring fakechat up within ${MAX_WAIT}s; trying next candidate"
+  log "model $CAND failed all $ATTEMPTS_PER_MODEL attempts; trying next candidate"
 done
+
+# Never leave a fakechat-less zombie session masquerading as "running" (it false-greens passive-health).
+if [ -z "$launched_model" ]; then
+  log "no candidate brought fakechat up; tearing down the leftover broken session"
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  pkill -f "channels plugin:fakechat" 2>/dev/null || true
+fi
 
 if [ -n "$launched_model" ]; then
   json_out "true" "restarted" "Claude Code restarted on model $launched_model"
