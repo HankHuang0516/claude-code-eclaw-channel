@@ -26,6 +26,8 @@ export interface ProbeElement {
   tagName: string;
   getAttribute(name: string): string | null;
   dataset: Record<string, string | undefined>;
+  /** The emoji glyph lives in the span's text content (entity-utils.js:225). */
+  textContent?: string | null;
   getBoundingClientRect(): { left: number; right: number; top: number; bottom: number; width: number; height: number };
   // img
   naturalWidth?: number;
@@ -102,7 +104,9 @@ export function extractSnapshot(doc: ProbeDocument, cfg: ProbeConfig): PageSnaps
       canvasDrawn: false,
       imgNaturalWidth: null,
       imgSrc: null,
-      emojiText: (el.getAttribute("data-emoji") ?? el.dataset?.emoji ?? null),
+      // The real portal renders the glyph as the span's textContent; the
+      // data-emoji attribute is a test-only convenience alias.
+      emojiText: ((el.textContent ?? "").trim() || el.getAttribute("data-emoji") || el.dataset?.emoji || null),
       isBoundPartner: eid != null && bound.has(eid),
     });
   }
