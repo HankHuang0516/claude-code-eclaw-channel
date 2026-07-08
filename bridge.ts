@@ -25,6 +25,7 @@ import {
   isNoopBotToBotAck,
   isNonRoutableNoise,
   chooseReplyHint,
+  detectStrandedBotReply,
   mapTmuxStateToRuntimeState,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
@@ -438,6 +439,25 @@ async function forwardReplyToEClaw(text: string, card?: any) {
   // hint (the server's @-mention layer routes them). See chooseReplyHint.
   const replyHint = chooseReplyHint(text, lastUserSenderHint, lastSenderHint);
   log(`Forwarding reply to EClaw (${via}): "${text.slice(0, 50)}..." device=${lastDeviceId} entity=${lastEntityId} routeHint=${replyHint?.kind ?? "none"}/${replyHint?.entityId ?? replyHint?.publicCode ?? "-"}${card ? " (with card)" : ""}`);
+
+  // Per-message delivery accounting (card_3ce0080a). A substantive, un-@mentioned
+  // reply sent DURING an active bot-to-bot exchange resolves to the human / null
+  // (the human-safety fail-safe in chooseReplyHint) and the backend then self-saves
+  // it on this device for lack of a target — so the peer that was mid-exchange
+  // receives nothing and the drop leaves no trace (exactly the #6→#2 strand: not
+  // suppressed, not in #2's chat scope). We do NOT re-route (that would re-open the
+  // status-report-hijacks-a-bot misroute the fail-safe prevents); we make the strand
+  // visible so it surfaces in the bridge log instead of vanishing. The end-to-end fix
+  // is upstream: the sending agent must carry `@<peer-code>` on a substantive b2b reply.
+  const stranded = detectStrandedBotReply(text, lastSenderHint, replyHint);
+  if (stranded) {
+    log(
+      `WARN delivery-strand: substantive reply sent mid bot-to-bot exchange with NO peer recipient — ` +
+        `peer #${stranded.strandedEntityId ?? "?"}/${stranded.strandedPublicCode ?? "-"} will receive nothing ` +
+        `(resolved to ${stranded.resolvedTo}; reply lacks a leading @mention). ` +
+        `Backend will self-save it on this device. Preview: "${stranded.preview}"`,
+    );
+  }
 
   await sendReplyToEClaw({
     apiBase: API_BASE,
