@@ -580,6 +580,98 @@ export function chooseReplyHint(
     return lastUserHint;
 }
 
+/**
+ * Per-message delivery accounting — surface a bot-to-bot reply that is about
+ * to be sent with NO bot recipient, so a silent strand becomes a visible WARN
+ * instead of vanishing (card_3ce0080a: #6's substantive reply to #2 never
+ * reached #2 and left no trace — not suppressed by the backend, not in #2's
+ * chat scope — because it self-saved on #6's own device for lack of a target).
+ *
+ * WHY this is only a guard, not a re-route: the drop is a genuine three-way
+ * interaction none of which this bridge can safely override at send time —
+ *   1. #6's Claude emitted a substantive reply meant for #2 but WITHOUT a
+ *      leading `@<#2-code>` (the b2b convention broke for that one message);
+ *   2. `chooseReplyHint` then (correctly, by the 2026-06-20 human-safety
+ *      fail-safe) refuses to route an un-@mentioned reply to a bot, resolving
+ *      it to the human principal or to null;
+ *   3. the backend's channel/message endpoint, seeing no @mention + no
+ *      speakTo/broadcast + a non-entity senderHint, treats the reply as a
+ *      self-note and saves it on the SENDER's OWN device (channel-api.js
+ *      `hasDelivery=false` → `saveChatMessage(deviceId, eId, …)`), so the
+ *      intended peer receives nothing.
+ * Auto-injecting an @mention here would re-open exactly the misroute the
+ * fail-safe exists to prevent (a status report to Hank hijacked onto a bot),
+ * so the safe, correct move is to make the strand OBSERVABLE and leave routing
+ * unchanged. The proper end-to-end fix is upstream: #6's runtime/agent must
+ * carry the `@<peer-code>` on a substantive b2b reply (the mention layer then
+ * routes it), or address the peer via an explicit speakTo.
+ *
+ * Fires only for the narrow, unambiguous strand shape:
+ *   - an active bot-to-bot exchange is in flight (`lastSenderHint.kind ===
+ *     "entity"` — the last inbound that set the routing target was a peer),
+ *   - the reply is substantive (real payload, not a noop ack / fleet noise —
+ *     those are SUPPOSED to reach no one and must not warn), AND
+ *   - the reply carries no leading @mention (so the mention layer will NOT
+ *     route it) AND the resolved hint is not that peer entity (so the reply
+ *     will land on the human or nobody, never the peer).
+ * Returns a structured diagnosis for the caller to log, or null when the
+ * reply is safely routed (has a mention / resolved to the peer / no b2b
+ * exchange is active / the reply is itself noise).
+ *
+ * Pure + exported for testing.
+ */
+export interface StrandedBotReplyDiagnosis {
+    /** entityId of the peer that was mid-exchange and will now receive nothing. */
+    strandedEntityId: number | undefined;
+    /** publicCode of that peer, when known. */
+    strandedPublicCode: string | null;
+    /** what the reply resolved to instead ("human" | "nobody"). */
+    resolvedTo: "human" | "nobody";
+    /** first 80 chars of the reply, for the log line (never the full payload). */
+    preview: string;
+}
+
+export function detectStrandedBotReply(
+    replyText: string,
+    lastSenderHint: SenderHint | null,
+    resolvedHint: SenderHint | null,
+): StrandedBotReplyDiagnosis | null {
+    // No active bot-to-bot exchange → an un-addressed reply going to the human
+    // is the normal, intended case; nothing to warn about.
+    if (!lastSenderHint || lastSenderHint.kind !== "entity") return null;
+    const text = replyText || "";
+    // Empty / whitespace-only reply carries no payload to strand — the forward
+    // path classifies text-less envelopes separately (warn_no_text) and never
+    // sends them as a substantive reply, so there is nothing to account for.
+    if (text.trim().length === 0) return null;
+    // A leading @mention means the server's mention layer will route it (the
+    // reply IS addressed) — not a strand.
+    if (REPLY_LEADING_MENTION_RE.test(text.trimStart())) return null;
+    // Noise (noop acks / fleet heartbeat / handoff markers) is meant to reach
+    // no one; stranding it is correct, so never warn on noise.
+    if (isNonRoutableNoise(text, "entity")) return null;
+    // Resolved back onto the SAME peer entity → it will be delivered; fine.
+    if (
+        resolvedHint &&
+        resolvedHint.kind === "entity" &&
+        resolvedHint.entityId !== undefined &&
+        resolvedHint.entityId === lastSenderHint.entityId
+    ) {
+        return null;
+    }
+    // Substantive, un-@mentioned, active b2b exchange, resolved off the peer →
+    // the peer receives nothing and the backend self-saves it. Surface it.
+    return {
+        strandedEntityId: lastSenderHint.entityId,
+        strandedPublicCode: lastSenderHint.publicCode ?? null,
+        resolvedTo:
+            resolvedHint && (resolvedHint.kind === "user" || resolvedHint.kind === "broadcast")
+                ? "human"
+                : "nobody",
+        preview: text.trim().slice(0, 80),
+    };
+}
+
 export type EnforcerAction =
     | { type: "skip"; reason: "fresh" | "cooldown" | "no_human_msg" | "hook_pending" | "crashed" }
     | { type: "trigger_auto_wake_only" }
