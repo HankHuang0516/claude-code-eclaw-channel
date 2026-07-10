@@ -26,6 +26,7 @@ import {
   isNonRoutableNoise,
   chooseReplyHint,
   mapTmuxStateToRuntimeState,
+  computeUnansweredHumanMsgAgeMs,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -544,6 +545,15 @@ async function pushRuntimeStateHeartbeat() {
   const runtimeState = mapTmuxStateToRuntimeState(tmuxState);
   const transitioned = runtimeState !== lastPushedRuntimeState;
 
+  // card_6959d3d0: forward the age of the oldest unanswered human message so
+  // EClaw's entity record can surface "已讀未回 Xs" instead of showing the bot
+  // as normal while a human waits. null when nothing is unanswered. Additive +
+  // best-effort — a backend that ignores the field is unaffected.
+  const unansweredHumanMsgAgeMs = computeUnansweredHumanMsgAgeMs(
+    lastHumanMsgTimestamp,
+    Date.now(),
+  );
+
   try {
     const resp = await fetch(`${API_BASE}/api/entity/heartbeat`, {
       method: "POST",
@@ -553,6 +563,7 @@ async function pushRuntimeStateHeartbeat() {
         entityId: lastEntityId,
         botSecret,
         runtimeState,
+        unansweredHumanMsgAgeMs,
       }),
     });
     if (resp.ok) {
