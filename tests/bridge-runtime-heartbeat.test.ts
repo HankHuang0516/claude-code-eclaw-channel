@@ -18,6 +18,7 @@ import { describe, expect, test } from "bun:test";
 import {
     classifyTmuxScreen,
     mapTmuxStateToRuntimeState,
+    computeUnansweredHumanMsgAgeMs,
     type RuntimeState,
     type TmuxState,
 } from "../bridge-state.ts";
@@ -96,5 +97,36 @@ describe("classifyTmuxScreen → mapTmuxStateToRuntimeState end-to-end", () => {
         const screen = "❯ ";
         const state = classifyTmuxScreen(screen, { hookPending: true });
         expect(mapTmuxStateToRuntimeState(state)).toBe("stuck");
+    });
+});
+
+describe("computeUnansweredHumanMsgAgeMs — 已讀未回 heartbeat signal (card_6959d3d0)", () => {
+    const NOW = 1_000_000;
+
+    test("null timestamp (nothing unanswered) → null", () => {
+        expect(computeUnansweredHumanMsgAgeMs(null, NOW)).toBe(null);
+    });
+
+    test("unanswered human message → positive age in ms", () => {
+        // human message landed 42s ago and no reply has cleared the timestamp.
+        expect(computeUnansweredHumanMsgAgeMs(NOW - 42_000, NOW)).toBe(42_000);
+    });
+
+    test("just-arrived message (1ms ago) → 1", () => {
+        expect(computeUnansweredHumanMsgAgeMs(NOW - 1, NOW)).toBe(1);
+    });
+
+    test("same-instant timestamp (age 0) → null, not 0", () => {
+        // age must be strictly positive to count as 'waiting'; 0 is indistinguishable
+        // from just-cleared, so treat as nothing waiting.
+        expect(computeUnansweredHumanMsgAgeMs(NOW, NOW)).toBe(null);
+    });
+
+    test("future timestamp (clock skew) → null, never a negative age", () => {
+        expect(computeUnansweredHumanMsgAgeMs(NOW + 5_000, NOW)).toBe(null);
+    });
+
+    test("non-finite timestamp (NaN) → null", () => {
+        expect(computeUnansweredHumanMsgAgeMs(NaN, NOW)).toBe(null);
     });
 });

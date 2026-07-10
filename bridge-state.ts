@@ -105,6 +105,32 @@ export function mapTmuxStateToRuntimeState(state: string): RuntimeState {
 }
 
 /**
+ * card_6959d3d0 (owner-reported 2026-07-10: "我的訊息你已讀了但是沒回覆 實體狀態
+ * 卻沒相關紀錄?"): the bridge knows locally, via `lastHumanMsgTimestamp`, that a
+ * human message is still unanswered (the reply enforcer sets it on inbound and
+ * clears it when a reply forwards). But the `runtimeState` heartbeat only carried
+ * busy/stuck/crashed/idle — none of which encodes "a human is waiting". So EClaw's
+ * entity record showed the bot as normal while it silently sat on an unanswered
+ * message (and the in-process timestamp resets to null on a session/bridge restart,
+ * losing the signal entirely). This computes the age (ms) of the oldest unanswered
+ * human message so the heartbeat can forward it and EClaw can surface "#N 有未回訊息
+ * Xs" + escalate.
+ *
+ * Returns null when there is nothing unanswered (timestamp null) OR the stored
+ * timestamp is not a finite number OR it is in the future (clock skew guard — a
+ * negative age is meaningless, treat as "nothing waiting" rather than emit a bogus
+ * negative). Pure + exported for unit testing.
+ */
+export function computeUnansweredHumanMsgAgeMs(
+    lastHumanMsgTs: number | null,
+    nowMs: number,
+): number | null {
+    if (lastHumanMsgTs === null || !Number.isFinite(lastHumanMsgTs)) return null;
+    const age = nowMs - lastHumanMsgTs;
+    return age > 0 ? age : null;
+}
+
+/**
  * Detects the github-computer MCP permission dialog, which has a required
  * "Allow access for this session?" dropdown that must be filled before the
  * Accept button can be pressed.
