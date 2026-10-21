@@ -32,6 +32,7 @@ import {
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
 import { sendReplyToEClaw, type SenderHint } from "./eclaw-sender.ts";
+import { pushUsageSnapshot } from "./usage-sync.ts";
 
 const LOG_FILE = "/tmp/eclaw-bridge.log";
 function log(msg: string) {
@@ -45,6 +46,9 @@ const API_KEY = process.env.ECLAW_API_KEY || "";
 const API_BASE = (process.env.ECLAW_API_BASE || "https://eclawbot.com").replace(/\/$/, "");
 // Phase 2: channel key path via /api/transform. Default false = legacy path.
 const PREFER_TRANSFORM_VIA_CHANNEL_KEY = process.env.ECLAW_PREFER_TRANSFORM_VIA_CHANNEL_KEY === "true";
+// Usage sync: reads ~/.claude/projects/**/*.jsonl + ~/.claude/usage-status.json
+// every 60s and pushes a snapshot to /api/usage/snapshot. Off by default.
+const ECLAW_USAGE_SYNC = process.env.ECLAW_USAGE_SYNC === "true";
 const CONFIGURED_ENTITY_ID = (() => {
   const raw = process.env.ECLAW_ENTITY_ID;
   if (!raw) return null;
@@ -537,6 +541,16 @@ async function diagnoseTmuxState(): Promise<string> {
     // tmux not available or errored — can't diagnose
     return "busy";
   }
+}
+
+// ── Usage snapshot (opt-in via ECLAW_USAGE_SYNC=true) ──
+// Reads ~/.claude/projects/**/*.jsonl (last 24h) + ~/.claude/usage-status.json
+// and POSTs to /api/usage/snapshot so the EClaw portal shows token consumption
+// without a separate Python daemon. Runs on the combined 60s tick; best-effort.
+async function usageSyncTick() {
+  if (!ECLAW_USAGE_SYNC) return;
+  if (!lastDeviceId || lastEntityId === null || !botSecret) return;
+  await pushUsageSnapshot(API_BASE, lastDeviceId, lastEntityId, botSecret, log);
 }
 
 /**
@@ -1043,6 +1057,8 @@ Bun.serve({
         // 2026-04-27 zombie /ask fix
         pendingAsks: pendingAsks.size,
         askTtlMin: ASK_TTL_MS / 60_000,
+        // usage sync
+        usageSyncEnabled: ECLAW_USAGE_SYNC,
       });
     }
 
@@ -1872,6 +1888,12 @@ setInterval(() => {
   gcPendingAsks();
   checkContextPressure().catch(() => {});
   checkReplyEnforcer().catch(() => {});
+  usageSyncTick().catch(() => {});
 }, 60_000);
 
+if (ECLAW_USAGE_SYNC) {
+  log("Usage sync enabled: pushing Claude Code snapshots every 60s");
+} else {
+  log("Usage sync disabled (set ECLAW_USAGE_SYNC=true to enable)");
+}
 log("Bridge started");
