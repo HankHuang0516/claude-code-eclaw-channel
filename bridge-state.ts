@@ -8,6 +8,50 @@
  * a synthetic screen + clock and assert the next action.
  */
 
+import { timingSafeEqual } from "node:crypto";
+
+// ── Inbound callback auth ──
+
+/** Just enough of `Headers` for a Request, a Headers, or a test fixture. */
+export interface HeaderBag {
+    get(name: string): string | null | undefined;
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+    const left = Buffer.from(a);
+    const right = Buffer.from(b);
+    if (left.length !== right.length) return false;
+    return timingSafeEqual(left, right);
+}
+
+/**
+ * Does this inbound push prove it knows the callback token we registered with
+ * EClaw? Accepts `Authorization: Bearer <token>` or `X-Callback-Token: <token>`
+ * — the two forms codex-eclaw-bridge's verifyCallbackAuth accepts — compared in
+ * constant time.
+ *
+ * /eclaw-webhook hands the message text to a Claude Code session started with
+ * --dangerously-skip-permissions, so a push that cannot show the token has to
+ * be rejected: forwarding it is remote command execution for anyone who learns
+ * the URL. With no token to compare against, nothing is authorized.
+ */
+export function isCallbackAuthorized(
+    req: { headers: HeaderBag },
+    expectedToken: string | null | undefined
+): boolean {
+    if (!expectedToken) return false;
+
+    const headerToken = req.headers.get("x-callback-token") ?? "";
+    if (headerToken && timingSafeEqualStr(headerToken, expectedToken)) return true;
+
+    const bearer = /^Bearer\s+(.+)$/i.exec(
+        req.headers.get("authorization") ?? ""
+    );
+    if (bearer && timingSafeEqualStr(bearer[1], expectedToken)) return true;
+
+    return false;
+}
+
 export type TmuxState =
     | "stuck_prompt"
     | "idle"
