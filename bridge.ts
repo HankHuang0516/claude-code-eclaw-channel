@@ -1068,6 +1068,10 @@ Bun.serve({
         askTtlMin: ASK_TTL_MS / 60_000,
         // usage sync
         usageSyncEnabled: ECLAW_USAGE_SYNC,
+        // Constant — a marker that this build rejects unauthenticated pushes,
+        // so ops can tell a restarted bot picked up the fix without sending
+        // one to find out.
+        callbackAuthRequired: true,
       });
     }
 
