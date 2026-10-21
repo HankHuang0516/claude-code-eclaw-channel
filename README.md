@@ -157,8 +157,8 @@ cp .mcp.json.example .mcp.json
 | `ECLAW_WEBHOOK_URL` | ✅ | 公開 URL（不含 `/eclaw-webhook` 路徑） | — |
 | `ECLAW_API_BASE` | | EClaw API 基底 URL | `https://eclawbot.com` |
 | `ECLAW_WEBHOOK_PORT` | | Webhook 監聽 port | `18800` |
-| `ECLAW_WEBHOOK_HOST` | | （`server.ts`）webhook 綁定位址；預設只綁 loopback，區網連不到。cloudflared 走 localhost，tunnel 不受影響 | `127.0.0.1` |
-| `ECLAW_CALLBACK_TOKEN` | | （`server.ts`）註冊給 EClaw 的 callback token，平台每次推送都要帶回來，不帶或不符一律 401。預設每次啟動隨機產生；設了才能跨重啟沿用同一組 | 隨機 |
+| `ECLAW_WEBHOOK_HOST` | | webhook 綁定位址（兩種模式都適用）；預設只綁 loopback，區網連不到。cloudflared 走 localhost，tunnel 不受影響 | `127.0.0.1` |
+| `ECLAW_CALLBACK_TOKEN` | | 註冊給 EClaw 的 callback token（兩種模式都適用），平台每次推送都要帶回來，不帶或不符一律 401。預設每次啟動隨機產生；設了才能跨重啟沿用同一組 | 隨機 |
 | `ECLAW_CHANNEL_LOG` | | （`server.ts`）log 路徑 | `/tmp/eclaw-channel.log` |
 | `ECLAW_BOT_NAME` | | Bot 顯示名稱 | `Claude Bot` |
 | `ECLAW_ENTITY_ID` | | 固定綁定的 EClaw entity slot；設定後 self-check 只會重新綁定到該 slot，不會落到第一個空位 | — |
@@ -377,17 +377,19 @@ curl http://localhost:18800/health
 cat /tmp/eclaw-bridge.log
 
 # 手動傳送測試訊息
-# server.ts 模式一定要帶 callback token，否則回 401；bridge.ts 模式會忽略這個 header。
+# 一定要帶 callback token，否則回 401（bridge.ts 與 server.ts 皆然）。
 curl -X POST http://localhost:18800/eclaw-webhook \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ECLAW_CALLBACK_TOKEN" \
   -d '{"deviceId":"test","entityId":0,"text":"Hello!","from":"tester"}'
 ```
 
-> 🔒 `server.ts` 的 `POST /eclaw-webhook` 會驗證 callback token（`Authorization: Bearer <token>`
-> 或 `X-Callback-Token: <token>`），不帶或不符回 401。這個 endpoint 會把文字直接送進跑著
-> `--dangerously-skip-permissions` 的 Claude Code session，不驗證等於把遠端下指令的權限
-> 交給任何知道網址的人。`GET /health` 維持免驗證，給監控用。
+> 🔒 `bridge.ts` 與 `server.ts` 的 `POST /eclaw-webhook` 都會驗證 callback token
+> （`Authorization: Bearer <token>` 或 `X-Callback-Token: <token>`），不帶或不符回 401。
+> 這個 endpoint 會把文字直接送進跑著 `--dangerously-skip-permissions` 的 Claude Code
+> session，不驗證等於把遠端下指令的權限交給任何知道網址的人。`GET /health` 維持免驗證，
+> 給監控用。bridge 模式的 `POST /ask`（PreToolUse hook 用）本來就沒有驗證，現在隨著
+> loopback 綁定一起只對本機開放。
 >
 > token 是啟動時註冊給 EClaw 的。**若註冊失敗（log 會印 `Inbound pushes will be rejected
 > with 401...`），平台手上還是上一組 token，所有推送都會被擋掉** — 重啟 bot 重新註冊即可。

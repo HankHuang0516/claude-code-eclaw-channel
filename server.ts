@@ -26,7 +26,7 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { appendFileSync } from "node:fs";
-import { timingSafeEqual } from "node:crypto";
+import { isCallbackAuthorized } from "./bridge-state.ts";
 
 const LOG_FILE = process.env.ECLAW_CHANNEL_LOG || "/tmp/eclaw-channel.log";
 function log(msg: string): void {
@@ -346,29 +346,9 @@ export async function registerWithEClaw(webhookUrl: string): Promise<void> {
 }
 
 // ── Webhook auth ──
-function timingSafeEqualStr(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
-}
-
-/**
- * Every EClaw push must prove it knows the callback token we registered,
- * either as `Authorization: Bearer <token>` or as `X-Callback-Token: <token>`
- * (the two forms codex-eclaw-bridge accepts). Anything else is rejected with
- * 401: this endpoint forwards straight into a Claude Code session started with
- * --dangerously-skip-permissions, so accepting an unauthenticated POST is
- * remote command execution for anyone who knows the URL.
- */
+/** Shared with bridge.ts — see isCallbackAuthorized in bridge-state.ts. */
 export function verifyCallbackAuth(req: Request): boolean {
-  const tokenHeader = req.headers.get("x-callback-token") ?? "";
-  if (tokenHeader && timingSafeEqualStr(tokenHeader, CALLBACK_TOKEN)) return true;
-
-  const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") ?? "");
-  if (bearer && timingSafeEqualStr(bearer[1], CALLBACK_TOKEN)) return true;
-
-  return false;
+  return isCallbackAuthorized(req, CALLBACK_TOKEN);
 }
 
 // ── Webhook HTTP Server ──

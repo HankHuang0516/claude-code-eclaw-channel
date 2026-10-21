@@ -28,6 +28,7 @@ import {
   detectStrandedBotReply,
   mapTmuxStateToRuntimeState,
   computeUnansweredHumanMsgAgeMs,
+  isCallbackAuthorized,
 } from "./bridge-state.ts";
 import { applyCompiledPromptPolicy, fetchCompiledPromptPolicy } from "./prompt-policy.ts";
 import { applyRoutingPolicy, fetchRoutingPolicy } from "./routing-policy.ts";
@@ -40,6 +41,11 @@ function log(msg: string) {
 }
 
 const WEBHOOK_PORT = parseInt(process.env.ECLAW_WEBHOOK_PORT || "18800", 10);
+// Loopback only. This port carries /eclaw-webhook and the unauthenticated
+// /ask hook endpoint, both of which drive a Claude Code session running with
+// --dangerously-skip-permissions, so it must not be reachable from the LAN.
+// cloudflared dials the origin over localhost, so the tunnel is unaffected.
+const WEBHOOK_HOST = process.env.ECLAW_WEBHOOK_HOST || "127.0.0.1";
 const CODEX_COMMANDS_URL = process.env.ECLAW_CODEX_COMMANDS_URL || "http://127.0.0.1:18801/commands";
 const FAKECHAT_WS = process.env.FAKECHAT_WS || "ws://localhost:8787/ws";
 const API_KEY = process.env.ECLAW_API_KEY || "";
@@ -885,24 +891,26 @@ function startWatchdogTimer() {
 }
 
 // ── EClaw Registration ──
-// Persist the callback token across self-checks so re-registration is
-// idempotent (EClaw keeps the same Bearer token, so webhooks pushed
-// between checks still authenticate correctly). Generated once on
-// first registration, reused until bridge restart.
-let persistedCallbackToken: string | null = null;
+function randomCallbackToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// One callback token for the life of the process: handed to EClaw at
+// registration and required back on every inbound push (see the
+// /eclaw-webhook gate). Fixing it keeps self-check re-registration idempotent,
+// so a push that lands between checks still authenticates. Set
+// ECLAW_CALLBACK_TOKEN to keep the same token across restarts — otherwise
+// EClaw holds the previous process's token, and pushes are rejected until the
+// first registration of this process succeeds.
+const CALLBACK_TOKEN = process.env.ECLAW_CALLBACK_TOKEN || randomCallbackToken();
 let lastSelfCheckAt: number | null = null;
 let lastSelfCheckOk: boolean | null = null;
 
 async function registerWithEClaw(isSelfCheck = false) {
-  if (!persistedCallbackToken) {
-    const tokenBytes = new Uint8Array(32);
-    crypto.getRandomValues(tokenBytes);
-    persistedCallbackToken = Array.from(tokenBytes)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-  }
-  const callbackToken = persistedCallbackToken;
-
   const webhookUrl = process.env.ECLAW_WEBHOOK_URL || `http://localhost:${WEBHOOK_PORT}`;
   const callbackUrl = `${webhookUrl}/eclaw-webhook`;
 
@@ -913,7 +921,7 @@ async function registerWithEClaw(isSelfCheck = false) {
       body: JSON.stringify({
         channel_api_key: API_KEY,
         callback_url: callbackUrl,
-        callback_token: callbackToken,
+        callback_token: CALLBACK_TOKEN,
       }),
     }, `EClaw registration${isSelfCheck ? " self-check" : ""}`);
 
@@ -1018,6 +1026,7 @@ async function registerWithEClaw(isSelfCheck = false) {
 
 // ── Webhook HTTP Server ──
 Bun.serve({
+  hostname: WEBHOOK_HOST,
   port: WEBHOOK_PORT,
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -1059,6 +1068,10 @@ Bun.serve({
         askTtlMin: ASK_TTL_MS / 60_000,
         // usage sync
         usageSyncEnabled: ECLAW_USAGE_SYNC,
+        // Constant — a marker that this build rejects unauthenticated pushes,
+        // so ops can tell a restarted bot picked up the fix without sending
+        // one to find out.
+        callbackAuthRequired: true,
       });
     }
 
@@ -1267,6 +1280,11 @@ Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/eclaw-webhook") {
+      if (!isCallbackAuthorized(req, CALLBACK_TOKEN)) {
+        log("/eclaw-webhook rejected: missing or invalid callback token");
+        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+      }
+
       try {
         const body: any = await req.json();
 
