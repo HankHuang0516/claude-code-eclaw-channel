@@ -129,9 +129,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { text, deviceId, entityId, state = "IDLE" } = args as {
       text: string;
       deviceId: string;
-      entityId: number;
+      entityId: number | string;
       state?: string;
     };
+    // Channel meta delivers entityId as a string; EClaw API expects a number.
+    const entityIdNum =
+      typeof entityId === "string" ? Number(entityId) : entityId;
 
     try {
       const resp = await fetch(`${API_BASE}/api/channel/message`, {
@@ -140,7 +143,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         body: JSON.stringify({
           channel_api_key: API_KEY,
           deviceId,
-          entityId,
+          entityId: entityIdNum,
           botSecret: callbackToken || "",
           message: text,
           state,
@@ -395,7 +398,7 @@ function startWebhookServer(): void {
                   user: from,
                   ts: new Date().toISOString(),
                   deviceId: effectiveDeviceId,
-                  entityId: effectiveEntityId,
+                  entityId: String(effectiveEntityId),
                 },
               },
             });
