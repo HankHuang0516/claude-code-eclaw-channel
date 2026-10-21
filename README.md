@@ -48,7 +48,7 @@ EClaw 平台 → Webhook → server.ts (MCP Server + HTTP)
 
 - **Bun** runtime — `curl -fsSL https://bun.sh/install | bash`
 - **Claude Code** v2.1.80+（含 fakechat plugin 支援）— `npm install -g @anthropic-ai/claude-code`
-- **claude.ai 帳號** — 需登入，不支援 API Key 認證（建議 Max 訂閱）
+- **Claude Code 登入** — 需登入才能跑模型。兩種身分都可以：claude.ai **訂閱（Pro／Max／Team／Enterprise 皆可）** 或 **Console API 用量計費**。Channel 機制與計費模式無關，兩者都能收發訊息。走 API 計費需先在 Console 儲值 usage credits，否則模型無額度跑不動（但 Channel 本身照常運作）；訂閱則吃方案額度、不另計費。
 - **tmux** — `brew install tmux`
 - **EClaw Channel API Key** — 從 [EClaw Portal](https://eclawbot.com) 取得（格式：`eck_...`）
 - **公開 URL**（用於接收 webhook）：
