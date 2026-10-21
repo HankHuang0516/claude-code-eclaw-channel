@@ -117,6 +117,16 @@ die() {
 # those are other bots managed by separate start-tunnel runs. Each strategy
 # below is scoped to either OUR port or OUR tunnel name, never a generic
 # "any cloudflared".
+#
+# Every pgrep below is `|| true`: finding nothing is the normal cold-start
+# answer, not a failure. Without it, "no match" (pgrep exit 1) propagates —
+# the brace group inherits the status of its LAST command, pipefail hands
+# that to the pipeline, and `pids=$(find_existing_cloudflared)` in the
+# caller trips errexit. The script then dies with no message at all. This
+# bit us for real on 2026-10-21: named mode on a host with no cloudflared
+# running exited 1 after printing only the "mode=named ..." line, never
+# reaching the tmux launch. quick mode only escaped by accident — its last
+# command is the `if`, which returns 0 when TUNNEL_NAME is empty.
 find_existing_cloudflared() {
   {
     # Strategy 1+2: argv contains our port. We drop the trailing \b that
@@ -125,13 +135,13 @@ find_existing_cloudflared() {
     # a path char (e.g. /webhook), neither of which can extend the match
     # into a longer port number that doesn't already start with our port,
     # so collisions like 18800 vs 188000 are not a real concern in practice.
-    pgrep -f "cloudflared.*localhost:${BRIDGE_PORT}([^0-9]|$)" 2>/dev/null
+    pgrep -f "cloudflared.*localhost:${BRIDGE_PORT}([^0-9]|$)" 2>/dev/null || true
     # Strategy 3: argv contains our tunnel UUID/name (named-with-config case)
     if [ -n "$TUNNEL_NAME" ]; then
       # Anchor with a non-word-char tail so a friendly name "b2" does not
       # match "b20". For UUIDs this is harmless (UUIDs don't share
       # prefixes with each other in practice).
-      pgrep -f "cloudflared.*${TUNNEL_NAME}([^a-zA-Z0-9_-]|$)" 2>/dev/null
+      pgrep -f "cloudflared.*${TUNNEL_NAME}([^a-zA-Z0-9_-]|$)" 2>/dev/null || true
     fi
   } | sort -u
 }
