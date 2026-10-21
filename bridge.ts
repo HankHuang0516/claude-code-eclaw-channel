@@ -1365,6 +1365,19 @@ Bun.serve({
           return Response.json({ ok: true, skipped: true });
         }
 
+        // Entity filter: when ECLAW_ENTITY_ID is configured, silently drop webhook
+        // pushes addressed to a different entity. Without this filter, a shared
+        // channel_api_key (or EClaw broadcast) causes a foreign entity's bridge to
+        // hijack replies that belong to another entity.
+        if (
+          CONFIGURED_ENTITY_ID !== null &&
+          entityId !== undefined &&
+          entityId !== CONFIGURED_ENTITY_ID
+        ) {
+          log(`Entity filter: ignoring push for entity ${entityId} (bridge configured for ${CONFIGURED_ENTITY_ID})`);
+          return Response.json({ ok: true, skipped: true, reason: "entity_mismatch" });
+        }
+
         // Update state for reply routing
         if (deviceId) lastDeviceId = deviceId;
         if (entityId !== undefined) lastEntityId = entityId;
